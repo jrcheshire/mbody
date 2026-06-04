@@ -7,6 +7,15 @@ with the analytic Eisenstein & Hu (1998) fitting formula retained behind the
 same interface as a fast, dependency-light, differentiable-friendly
 alternative (the two agree to ~4%).
 
+**Cross-cutting: diagnostics & visualization.** Every stage should be
+inspectable. Each evolving stage (LPT, the PM leapfrog) takes an optional
+snapshot/callback hook so state can be captured per step without changing the
+physics or autodiff path; a small optional `mbody` viz layer then turns a
+sequence of snapshots into slice/scatter frames and stitches them into an
+**animation of structure forming** from the initial conditions. Shared
+diagnostics (P(k), cross-correlation, later the bispectrum) are first-class and
+reused across steps. Keep all of this optional and off the hot/AD path.
+
 ## Step 0 -- de-risk autodiff through the FFT  [done]
 
 Verified on Apple Silicon (MLX 0.31.2): `mx.grad` flows cleanly through
@@ -25,13 +34,16 @@ Also probe the other differentiability-critical primitive: **scatter-add**
 (CIC painting is a scatter, CIC read is a gather). Confirm `mx.grad` flows
 through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
 
-## Step 1 -- linear theory + Gaussian ICs
+## Step 1 -- linear theory + Gaussian ICs  [done]
 
-- EH98 transfer function -> linear `P(k)` at the target redshift.
-- Generate a Gaussian random field `delta_lin` on an `N^3` mesh from `P(k)`
-  with the correct Hermitian symmetry.
-- Validate: the measured `P(k)` of the realization recovers the input to
-  cosmic variance.
+- `mbody/cosmology.py`: CAMB (default) + EH98 backends for the transfer
+  function / linear `P(k)`, exact flat-LCDM growth, sigma8 normalization.
+- `mbody/fields.py`: Gaussian random field on the `N^3` mesh (real white noise
+  -> rfftn -> colour by sqrt(P(k)/V_cell) -> irfftn, automatically Hermitian),
+  plus a `P(k)` estimator.
+- Validated: EH98 vs CAMB agree to ~4%; the measured `P(k)` of a realization
+  recovers the input to <0.2% (modes-weighted over 30 realizations). Figures
+  under `outputs/`; scaling via `scripts/bench_fields.py`.
 
 ## Step 2 -- LPT displacement -> particles
 

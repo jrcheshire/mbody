@@ -268,9 +268,13 @@ def _camb_logpk0(cosmo):
 
 def _camb_power0(k_hmpc, cosmo):
     # Log-log interpolation of the cached CAMB P(k, z=0). np.interp clamps at
-    # the grid edges; our k always falls inside [1e-5, 50] h/Mpc.
+    # the grid edges; our k always falls inside [1e-5, 50] h/Mpc. Non-positive
+    # k (e.g. the DC mode of a mesh) returns P = 0 without a log(0) warning.
     lk, lp = _camb_logpk0(cosmo)
-    return np.exp(np.interp(np.log(k_hmpc), lk, lp))
+    k = np.asarray(k_hmpc, dtype=np.float64)
+    safe = np.where(k > 0, k, 1.0)
+    out = np.exp(np.interp(np.log(safe), lk, lp))
+    return np.where(k > 0, out, 0.0)
 
 
 def transfer_camb(k_hmpc, cosmo):
