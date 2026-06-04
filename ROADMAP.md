@@ -45,11 +45,15 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
   recovers the input to <0.2% (modes-weighted over 30 realizations). Figures
   under `outputs/`; scaling via `scripts/bench_fields.py`.
 
-## Step 2 -- LPT displacement -> particles
+## Step 2 -- LPT displacement -> particles  [1LPT done]
 
-- Zel'dovich (1LPT) displacement field from `delta_lin`; 2LPT later.
-- Place `N_p` particles on a grid, displace, assign velocities.
-- Validate: cross-correlation with the linear field; visual slice plots.
+- `mbody/lpt.py`: Zel'dovich (1LPT) displacement `Psi_1 = grad lap^-1 delta` via
+  FFT; particles placed on the grid and displaced, growth-scaled by D(z).
+- Validated: the identity `div Psi_1 = -delta` holds on all resolved Fourier
+  modes (<1e-4; the only residual is the Nyquist-plane spectral-gradient
+  ambiguity). Structure-formation figure + animation under `outputs/`.
+- TODO: 2LPT; velocities (deferred to the integrator); and -- once CIC painting
+  exists -- the displaced-density cross-correlation / P(k) recovery check.
 
 ## Step 3 -- PM force solve + leapfrog
 
