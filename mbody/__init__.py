@@ -10,7 +10,7 @@ scale-dependent bias Delta b(k) ~ f_NL / k^2.
 See README.md for orientation and ROADMAP.md for the staged plan.
 """
 
-from mbody import cosmology, fields, lpt, painting, precision
+from mbody import cosmology, fields, forces, lpt, painting, precision
 from mbody.config import (
     BoxConfig,
     Cosmology,
@@ -27,6 +27,7 @@ __all__ = [
     "fields",
     "lpt",
     "painting",
+    "forces",
     "Cosmology",
     "BoxConfig",
     "TimeStepping",

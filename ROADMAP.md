@@ -63,9 +63,16 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
   (`mx.stop_gradient`) because MLX refuses a VJP w.r.t. scatter/gather indices.
   Validated: mass conservation, exact paint/read adjoint, mx.grad vs fp64 finite
   difference, and displaced-density recovers linear P(k) to ~1% at high z.
-- TODO `mbody/forces.py`: FFT -> Poisson in Fourier (`Phi_k = -delta_k/k^2`) ->
-  force `-grad(Phi)` -> `cic_read` forces back to particles. (Note: the force
-  kernel `i k/k^2` is the same one `lpt._k_components` already builds.)
+- DONE `mbody/forces.py`: FFT Poisson solve. `potential` (`phi_k =
+  -delta_k/k^2`), `acceleration_field` (`g_j = i k_j delta_k/k^2`, the same
+  kernel `lpt._k_components` builds), and `forces_on_particles` (paint -> solve
+  -> `cic_read`), all differentiable. Validated: the potential inverts the
+  Laplacian and `div g = -delta` on every resolved mode (<1e-4); the
+  acceleration of a realization equals its Zel'dovich displacement to fp32 (the
+  headline identity); a single-mode analytic case; zero net force by parity
+  (~1e-8); and `mx.grad` vs an fp64 directional finite difference (~1%).
+  `scripts/plot_forces.py` renders the potential + acceleration quiver. The
+  cosmological prefactor `(3/2) Omega_m H0^2/a` is deferred to the integrator.
 - TODO `mbody/integrate.py`: kick-drift-kick leapfrog (FastPM kernels) with an
   optional per-step snapshot hook for the animation framework; the velocity /
   time convention is fixed here.
