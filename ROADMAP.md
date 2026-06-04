@@ -1,11 +1,19 @@
 # M-body roadmap
 
 Staged plan, smallest-runnable-thing first. Each step should leave a runnable
-script in `scripts/` and (where it makes sense) a test in `tests/`. v0 leans on
-an analytic Eisenstein & Hu (1998) transfer function so the toy stays
-self-contained; CAMB is an optional upgrade later.
+script in `scripts/` and (where it makes sense) a test in `tests/`. Linear
+theory uses the **CAMB Boltzmann solver as the default** transfer/P(k) backend,
+with the analytic Eisenstein & Hu (1998) fitting formula retained behind the
+same interface as a fast, dependency-light, differentiable-friendly
+alternative (the two agree to ~4%).
 
-## Step 0 -- de-risk autodiff through the FFT  [in progress]
+## Step 0 -- de-risk autodiff through the FFT  [done]
+
+Verified on Apple Silicon (MLX 0.31.2): `mx.grad` flows cleanly through
+`rfftn`/`irfftn`, through scatter-add (`mesh.at[idx].add`, accumulates) and
+gather, and `mx.checkpoint` / `@mx.custom_function` work. float64 raises on the
+GPU (CPU-stream islands only). See docs/architecture-plan.md "Local
+verification".
 
 `scripts/probe_ad_fft.py` (`pixi run probe`). The PM force solve and the P(k)
 estimator both route through `mx.fft`, so before building anything, confirm

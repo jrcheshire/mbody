@@ -39,6 +39,7 @@ pytest = "*"
 black = "*"
 flake8 = "*"
 flake8-bugbear = "*"
+camb = ">=1.6.5,<2"
 
 [tool.pixi.pypi-dependencies]
 mbody = { path = ".", editable = true }
