@@ -353,6 +353,21 @@ def growth_factor(z, cosmo):
     return float(D) if z_arr.ndim == 0 else D
 
 
+def growth_factor_md(z, cosmo):
+    """Growth factor normalized to D = a = 1/(1+z) in matter domination.
+
+    This is the convention used in the local-f_NL relation between the
+    primordial potential and the linear density, delta(k, z) = M(k, z) phi(k).
+    It is just the unnormalized growth integral, which tends to a as a -> 0
+    (whereas growth_factor is rescaled to D(z=0) = 1, so the two differ by the
+    constant growth_factor_md(0) = 1 / lim_{a->0} [growth_factor(a)/a]).
+    """
+    z_arr = np.asarray(z, dtype=np.float64)
+    a = 1.0 / (1.0 + z_arr.ravel())
+    D = np.array([_growth_unnorm(ai, cosmo) for ai in a]).reshape(z_arr.shape)
+    return float(D) if z_arr.ndim == 0 else D
+
+
 def growth_rate(z, cosmo):
     """Linear growth rate f = dlnD/dlna (exact for flat LCDM).
 

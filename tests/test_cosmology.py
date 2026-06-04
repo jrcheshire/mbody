@@ -94,6 +94,16 @@ def test_growth_factor_limits():
     assert abs(d49 / d99 - 1.0) < 1e-3
 
 
+def test_growth_factor_md_matter_domination():
+    # Normalized to D = a in matter domination, so D_md(z) * (1 + z) -> 1 high z.
+    assert abs(C.growth_factor_md(99.0, COSMO) * 100.0 - 1.0) < 5e-3
+    assert abs(C.growth_factor_md(49.0, COSMO) * 50.0 - 1.0) < 1e-2
+    # Differs from the D(0) = 1 growth only by the constant D_md(0).
+    c0 = C.growth_factor_md(0.0, COSMO)
+    for z in (0.0, 1.0, 9.0):
+        assert abs(C.growth_factor_md(z, COSMO) / C.growth_factor(z, COSMO) - c0) < 1e-6
+
+
 def test_growth_rate_limits():
     # f(0) ~ Omega_m^0.55 (the standard approximation), f -> 1 at high z.
     assert abs(C.growth_rate(0.0, COSMO) - COSMO.Omega_m**0.55) < 0.01
