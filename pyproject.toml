@@ -1,0 +1,52 @@
+[project]
+name = "mbody"
+version = "0.1.0"
+description = "M-body: a differentiable particle-mesh N-body toy in MLX on Apple Silicon, targeting autodiff dlnP(k)/df_NL"
+requires-python = ">=3.11"
+authors = [{ name = "Jamie Cheshire" }]
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "mlx",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mbody"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+# MLX is Apple-Silicon only, and unified-memory autodiff on Metal is the whole
+# point. Keep the platform single unless/until a CPU fallback actually matters.
+platforms = ["osx-arm64"]
+
+# Current MLX wheels target macOS 14+; the default osx-arm64 baseline (13.0) is
+# too old. Raise the floor (the dev machine is macOS 26).
+[tool.pixi.system-requirements]
+macos = "14.0"
+
+[tool.pixi.dependencies]
+# Capped below 3.14: MLX wheels currently top out at cp313.
+python = ">=3.12,<3.14"
+numpy = "*"
+scipy = "*"
+matplotlib = "*"
+pytest = "*"
+black = "*"
+flake8 = "*"
+flake8-bugbear = "*"
+
+[tool.pixi.pypi-dependencies]
+mbody = { path = ".", editable = true }
+mlx = "*"
+
+[tool.pixi.tasks]
+test = "pytest tests/ -v"
+format = "black --skip-string-normalization mbody scripts tests"
+check-format = "black --check --skip-string-normalization mbody scripts tests"
+lint = "flake8 mbody scripts tests"
+probe = "python scripts/probe_ad_fft.py"
