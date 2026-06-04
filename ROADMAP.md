@@ -55,7 +55,7 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
 - TODO: 2LPT; velocities (deferred to the integrator); and -- once CIC painting
   exists -- the displaced-density cross-correlation / P(k) recovery check.
 
-## Step 3 -- PM force solve + leapfrog  [in progress]
+## Step 3 -- PM force solve + leapfrog  [done]
 
 - DONE `mbody/painting.py`: CIC paint particles -> density mesh, and CIC read
   (the trilinear adjoint). Differentiable -- gradients flow through the CIC
@@ -73,11 +73,23 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
   (~1e-8); and `mx.grad` vs an fp64 directional finite difference (~1%).
   `scripts/plot_forces.py` renders the potential + acceleration quiver. The
   cosmological prefactor `(3/2) Omega_m H0^2/a` is deferred to the integrator.
-- TODO `mbody/integrate.py`: kick-drift-kick leapfrog (FastPM kernels) with an
-  optional per-step snapshot hook for the animation framework; the velocity /
-  time convention is fixed here.
-- Validate: final `P(k)` growth vs linear on large scales; the cosmic web
-  sharpens relative to the Zel'dovich washout.
+- DONE `mbody/integrate.py`: kick-drift-kick leapfrog in scale-factor time.
+  EOM (H0 = 1 units) `dx/da = p/(a^3 E)`, `dp/da = (3/2) Omega_m g/(a^2 E)`, so
+  the whole cosmological prefactor lives in the kick/drift factors (exact
+  background integrals, fp64 CPU) and forces.py stays geometric. Zel'dovich
+  growing-mode velocity IC `p = a^2 E D f Psi`. Optional off-AD-path `snapshot`
+  callback for diagnostics / animation. `evolve_state` is a pure differentiable
+  function of (x, p): `mx.grad` flows through the whole unrolled trajectory.
+  Validated: large-scale growth tracks linear `D(a)` and converges as steps
+  rise (this is the exact-background leapfrog; ~2% deficit at low step count is
+  the expected discretization error); kick/drift additivity; growing-mode IC;
+  snapshot bookkeeping; AD-through-leapfrog vs fp64 FD. Determinism is to fp32
+  round-off only, not bit-exact (GPU scatter-add is nondeterministic).
+  `scripts/animate_pm.py` (structure-formation gif via snapshot) and
+  `scripts/plot_growth.py` (P(k) + D(a) validation figure).
+- NEXT (stage 2, parked in Stretch): FastPM growth-corrected kick/drift kernels
+  (Feng et al. 2016) to reproduce linear growth at very low step count, checked
+  against this exact-background baseline.
 
 ## Step 4 -- local f_NL initial conditions
 
