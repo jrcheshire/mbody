@@ -55,14 +55,22 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
 - TODO: 2LPT; velocities (deferred to the integrator); and -- once CIC painting
   exists -- the displaced-density cross-correlation / P(k) recovery check.
 
-## Step 3 -- PM force solve + leapfrog
+## Step 3 -- PM force solve + leapfrog  [in progress]
 
-- CIC paint particles -> density mesh.
-- FFT -> solve Poisson in Fourier space -> gradient -> force mesh.
-- CIC read forces back to particles.
-- Kick-drift-kick leapfrog over a few steps.
-- Measure final `P(k)`; sanity-check growth against linear theory on large
-  scales.
+- DONE `mbody/painting.py`: CIC paint particles -> density mesh, and CIC read
+  (the trilinear adjoint). Differentiable -- gradients flow through the CIC
+  weights to particle positions; the integer cell indices are detached
+  (`mx.stop_gradient`) because MLX refuses a VJP w.r.t. scatter/gather indices.
+  Validated: mass conservation, exact paint/read adjoint, mx.grad vs fp64 finite
+  difference, and displaced-density recovers linear P(k) to ~1% at high z.
+- TODO `mbody/forces.py`: FFT -> Poisson in Fourier (`Phi_k = -delta_k/k^2`) ->
+  force `-grad(Phi)` -> `cic_read` forces back to particles. (Note: the force
+  kernel `i k/k^2` is the same one `lpt._k_components` already builds.)
+- TODO `mbody/integrate.py`: kick-drift-kick leapfrog (FastPM kernels) with an
+  optional per-step snapshot hook for the animation framework; the velocity /
+  time convention is fixed here.
+- Validate: final `P(k)` growth vs linear on large scales; the cosmic web
+  sharpens relative to the Zel'dovich washout.
 
 ## Step 4 -- local f_NL initial conditions
 
