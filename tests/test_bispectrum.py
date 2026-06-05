@@ -1,11 +1,15 @@
-"""Tests for the Scoccimarro FFT bispectrum estimator (mbody.fields).
+"""Tests for the Scoccimarro FFT bispectrum estimator (mbody.fields) and the
+local-f_NL template (mbody.ic).
 
-The normalization is checked deterministically: a plane-wave field with a closed
-triangle of distinct-magnitude modes has an analytic triple product, so the
-estimator must return B = L^6 a^3 / (4 n_tri) exactly (no cosmic variance) -- a
-direct test of the V^2/N^9 prefactor and the data path -- with n_tri
-cross-checked against a brute-force triangle count. The estimator's autodiff is
-checked against a finite difference. Tolerances were measured with
+The normalization is checked two independent ways. A deterministic plane-wave
+field with a closed triangle has an analytic triple product, so the estimator
+must return B = L^6 a^3 / (4 n_tri) exactly (no cosmic variance) -- a direct
+test of the V^2/N^9 prefactor; n_tri is cross-checked against a brute-force
+triangle count. The statistical path is checked with the matched-phase
+antisymmetric combination [B(+f) - B(-f)]/2, which cancels the Gaussian
+cosmic-variance term and isolates the tree signal, so a handful of seeds on a
+small box already recover the binned template (squeezed c_cal ~ 1; measured
+~1.006 over 16 seeds in dev). Tolerances here were measured with
 scripts/probe_bispectrum.py, not guessed.
 """
 
@@ -90,6 +94,72 @@ def _squeezed_triangles():
     kf = BOX.k_fundamental
     k_short = round(8 * kf, 12)
     return [(round(n * kf, 12), k_short, k_short) for n in (2, 3, 4)]
+
+
+def _antisym_signal(triangles, f_NL, nseed, seed0=2000):
+    """[B(+f) - B(-f)]/2 averaged over matched-phase seed pairs. Cancels the
+    Gaussian cosmic-variance term, isolating the tree signal."""
+    acc = np.zeros(len(triangles))
+    for s in range(nseed):
+        dp = IC.linear_density(BOX, COSMO, seed=seed0 + s, f_NL=f_NL)
+        dm = IC.linear_density(BOX, COSMO, seed=seed0 + s, f_NL=-f_NL)
+        bp, _ = F.bispectrum(dp, BOX, triangles)
+        bm, _ = F.bispectrum(dm, BOX, triangles)
+        acc += 0.5 * (bp - bm)
+    return acc / nseed
+
+
+def test_squeezed_matches_binned_template():
+    # The headline closure: the cosmic-variance-cancelled squeezed signal
+    # recovers the bin-averaged template with unit calibration. Measured
+    # c_cal ~ 1.006 (16 seeds); allow a measured band, do not relax further.
+    tris = _squeezed_triangles()
+    f_NL = 1000.0
+    signal = _antisym_signal(tris, f_NL, nseed=16)
+    tmpl = IC.local_bispectrum_binned(BOX, COSMO, tris, f_NL)
+    c_cal = float(np.sum(signal * tmpl) / np.sum(tmpl**2))
+    assert 0.85 < c_cal < 1.15
+    assert np.all(np.abs(signal / tmpl - 1.0) < 0.30)  # per-bin (measured <0.15)
+
+
+def test_squeezed_divergence():
+    # The scale-dependent-bias signature: B rises as k_long shrinks (toward the
+    # 1/M_long ~ 1/k_long^2 divergence). Check monotonic decrease with k_long in
+    # both the signal and the binned template.
+    tris = _squeezed_triangles()  # k_long increasing: 2,3,4 kf
+    f_NL = 1000.0
+    signal = _antisym_signal(tris, f_NL, nseed=16)
+    tmpl = IC.local_bispectrum_binned(BOX, COSMO, tris, f_NL)
+    assert signal[0] > signal[1] > signal[2] > 0
+    assert tmpl[0] > tmpl[1] > tmpl[2] > 0
+
+
+def test_gaussian_field_zero_bispectrum():
+    # A Gaussian (f_NL = 0) field has zero tree bispectrum: the seed-mean B is
+    # consistent with zero, i.e. small next to the f_NL = 1000 signal.
+    tris = _squeezed_triangles()
+    nseed = 16
+    acc = np.zeros(len(tris))
+    for s in range(nseed):
+        d = IC.linear_density(BOX, COSMO, seed=2000 + s, f_NL=0.0)
+        b, _ = F.bispectrum(d, BOX, tris)
+        acc += b
+    mean0 = acc / nseed
+    signal = _antisym_signal(tris, 1000.0, nseed=nseed)
+    assert np.all(np.abs(mean0) < 0.6 * np.abs(signal))  # measured <0.3
+
+
+def test_template_odd_and_linear_in_fnl():
+    # Both templates are exactly linear (hence odd) in f_NL: pure-theory check.
+    tris = _squeezed_triangles()
+    for tmpl in (
+        lambda f: IC.local_bispectrum_template(tris, COSMO, f),
+        lambda f: IC.local_bispectrum_binned(BOX, COSMO, tris, f),
+    ):
+        b1 = tmpl(1.0)
+        assert np.allclose(tmpl(250.0), 250.0 * b1, rtol=1e-6)
+        assert np.allclose(tmpl(-100.0), -100.0 * b1, rtol=1e-6)
+        assert np.all(b1 > 0)  # f_NL > 0 gives positive squeezed B
 
 
 def test_bispectrum_autodiff_matches_fd():

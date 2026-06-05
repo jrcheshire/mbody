@@ -91,12 +91,32 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
   (Feng et al. 2016) to reproduce linear growth at very low step count, checked
   against this exact-background baseline.
 
-## Step 4 -- local f_NL initial conditions
+## Step 4 -- local f_NL initial conditions  [done]
 
-- `phi = phi_G + f_NL * (phi_G^2 - <phi_G^2>)` on the potential, then scale to
-  `delta_lin` via the transfer function.
-- Validate the injected `f_NL` against the field bispectrum (squeezed limit)
-  on large scales.
+- DONE `mbody/ic.py`: `phi = phi_G + f_NL * (phi_G^2 - <phi_G^2>)` on the
+  potential, then scale to `delta_lin` via the Poisson/transfer factor
+  `M(k, z)`. Differentiable, kink-free, bit-reproducible in f_NL.
+- DONE `mbody/fields.py`: Scoccimarro FFT bispectrum estimator
+  (`bispectrum`, and a differentiable single-triangle `bispectrum_single`).
+  Shell-filter `delta_k` onto `|k|` bins, `B = (V^2/N^9) sum_x I1 I2 I3 /
+  sum_x J1 J2 J3` (the `V^2/N^9` prefactor is exact in the same DFT convention
+  as `power_spectrum`'s `V/N^6`). Reductions are fp64 on the CPU stream.
+- DONE `mbody/ic.py`: the analytic local templates -- `local_bispectrum_template`
+  (continuum tree `B = 2 f_NL [M3/(M1 M2) P1 P2 + perms]`) and
+  `local_bispectrum_binned` (the exact bin-averaged prediction, via the same
+  shell-product identity, which removes the binning systematic so the estimator
+  matches with unit calibration).
+- Validated (`scripts/probe_bispectrum.py`, `tests/test_bispectrum.py`):
+  normalization is exact two ways -- a deterministic closed-triangle plane-wave
+  field gives `B = L^6 a^3/(4 n_tri)` to ~5e-8, and `n_tri` matches a
+  brute-force triangle count; in a real measurement the matched-phase
+  cosmic-variance-cancelled squeezed signal recovers the binned template with
+  `c_cal ~ 1.0` (1.01 over 40 seeds at 256/128; 1.006 over 16 seeds at the test
+  box). The squeezed `1/k_long^2` divergence (the scale-dependent-bias
+  signature) is reproduced, `B` is odd/linear in f_NL, `B(f_NL=0) ~ 0`, and
+  `mx.grad` dB/df_NL matches an FD to ~5e-5. `scripts/plot_fnl.py` ->
+  `outputs/fnl_bispectrum.png` (density slice, skewed PDF, measured-vs-template
+  squeezed B).
 
 ## Step 5 -- the headline: autodiff dlnP/df_NL
 
