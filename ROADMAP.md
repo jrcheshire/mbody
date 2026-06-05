@@ -155,9 +155,15 @@ whose f_NL response enters via the squeezed bispectrum (Step 4 physics).
 - Gradients w.r.t. cosmological parameters (autodiff Fisher).
 - A toy galaxy bias and exploration of `b_phi` -- the real SPHEREx lever; its
   degeneracy with `f_NL` is the dominant systematic (see CLAUDE.md).
-- Gradient-checkpointing the leapfrog: reverse-mode memory grows with the
-  number of steps because the graph unrolls; checkpointing trades compute for
-  memory.
+- Leapfrog AD memory (reverse-mode grows with step count as the graph unrolls).
+  RESOLVED via a reversible adjoint, NOT checkpointing: `mx.checkpoint` was
+  measured to give no memory reduction here (the PM solve is near-linear, so
+  reverse-mode retains almost nothing to recompute-away). The reversible-leapfrog
+  adjoint (`integrate.adjoint_grad_fnl`) gives an O(1)-in-steps gradient instead
+  -- flat memory vs step count (23x less than replay at 32 steps, N=64) at ~2x
+  compute, grad matching replay to ~1e-6. `mx.compile` of the force solve is
+  ~1x (FFT-bound). See `scripts/bench_pm.py` and the module docstrings. Next
+  here: generalize the adjoint IC step to cosmology params (autodiff Fisher).
 - 2LPT ICs; more steps; convergence study vs a reference (pmwd / analytic).
 
 ## Known risks / open questions
