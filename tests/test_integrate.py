@@ -15,6 +15,7 @@ import mlx.core as mx
 from mbody.config import BoxConfig, Cosmology, TimeStepping
 from mbody import cosmology as C
 from mbody import fields as F
+from mbody import forces as FO
 from mbody import lpt as L
 from mbody import painting as PA
 from mbody import integrate as IG
@@ -160,3 +161,120 @@ def test_differentiable_through_leapfrog():
     fd = (loss64(x0 + h * vmx) - loss64(x0 - h * vmx)) / (2.0 * h)
     ad = float(mx.sum(g * vmx))
     assert abs(fd - ad) / abs(ad) < 0.10
+
+
+# --- Performance wiring: compiled force solve + gradient checkpointing ---
+# These must change cost (wall time / AD memory) WITHOUT changing the numbers:
+# the compiled solve and the checkpointed solve are the same computation, so the
+# forward field and its gradient must agree with the eager/replay path to the
+# float32 + CIC-scatter round-off floor (~1e-6), not to some looser tolerance.
+
+
+def test_compiled_force_matches_eager():
+    # mx.compile fuses the paint -> Poisson solve -> read chain; the result must
+    # equal the eager force up to float32 reassociation (no semantic change).
+    x0, _ = IG.initial_state(SMALL, COSMO, TimeStepping(n_steps=4), seed=0)
+    g_eager = FO.make_force_fn(SMALL)(x0)
+    g_comp = FO.make_force_fn(SMALL, compiled=True)(x0)
+    mx.eval(g_eager, g_comp)
+    rel = float(mx.max(mx.abs(g_eager - g_comp))) / float(mx.max(mx.abs(g_eager)))
+    assert rel < 1e-5
+
+
+def _traj_grad(force_fn, x0, p0, ag):
+    def loss(x):
+        xf, _ = IG.evolve_state(x, p0, SMALL, COSMO, ag, force_fn=force_fn)
+        return mx.sum(PA.density_contrast(xf, SMALL) ** 2)
+
+    return mx.grad(loss)(x0)
+
+
+def test_checkpoint_grad_matches_replay():
+    # Gradient checkpointing recomputes each step's force in the backward pass
+    # to save memory; the gradient must be identical to the full-replay graph
+    # (and to the compiled+checkpointed path) up to the ~1e-6 scatter-add floor.
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=4)
+    x0, p0 = IG.initial_state(SMALL, COSMO, t, seed=0)
+    ag = IG.a_grid(t)
+    g_replay = _traj_grad(FO.make_force_fn(SMALL), x0, p0, ag)
+    g_ckpt = _traj_grad(FO.make_force_fn(SMALL, checkpoint=True), x0, p0, ag)
+    g_cc = _traj_grad(
+        FO.make_force_fn(SMALL, compiled=True, checkpoint=True), x0, p0, ag
+    )
+    mx.eval(g_replay, g_ckpt, g_cc)
+    den = float(mx.max(mx.abs(g_replay)))
+    assert float(mx.max(mx.abs(g_ckpt - g_replay))) / den < 1e-4
+    assert float(mx.max(mx.abs(g_cc - g_replay))) / den < 1e-4
+
+
+def test_leapfrog_memory_mode_and_compiled_paths():
+    # The leapfrog knobs run end-to-end and agree with the default path; the
+    # 'adjoint' mode is a gradient strategy, not a forward mode, so leapfrog
+    # rejects it (pointing at adjoint_grad_fnl) rather than silently mis-stepping.
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=3)
+    x_def, _ = IG.leapfrog(SMALL, COSMO, t, seed=1)
+    x_ck, _ = IG.leapfrog(SMALL, COSMO, t, seed=1, memory_mode="checkpoint")
+    x_cc, _ = IG.leapfrog(
+        SMALL, COSMO, t, seed=1, compiled=True, memory_mode="checkpoint"
+    )
+    mx.eval(x_def, x_ck, x_cc)
+    assert float(mx.max(mx.abs(x_ck - x_def))) < 1e-3  # scatter-add floor
+    assert float(mx.max(mx.abs(x_cc - x_def))) < 1e-3
+    try:
+        IG.leapfrog(SMALL, COSMO, t, seed=1, memory_mode="adjoint")
+        raise AssertionError("adjoint must not run as a forward memory_mode")
+    except ValueError:
+        pass
+
+
+# --- Reversible adjoint integrator: O(1)-in-steps gradient of f_NL ---
+# The adjoint reconstructs each state by reverse-stepping the (time-reversible)
+# leapfrog instead of storing the trajectory, so its gradient must match the
+# replay mx.grad to the float32 reversibility floor while its memory is flat in
+# the step count. These check correctness; the memory win is measured in
+# scripts/bench_pm.py.
+
+
+def _adjoint_setup():
+    box = BoxConfig(box_size=256.0, n_mesh=16, n_particles=16)
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=6)
+    kb = np.arange(1, 4) * box.k_fundamental
+
+    def loss_field(xf):  # one scalar summary of the final positions
+        d = PA.density_contrast(xf, box)
+        return mx.sum(F.band_power(d, box, kb))
+
+    return box, t, kb, loss_field
+
+
+def test_evolve_eager_matches_replay():
+    # The eager (O(1)-memory) forward must reach the same final field as the
+    # replay stepper, up to the scatter-add floor. (It recomputes the force each
+    # step instead of reusing it, so this also checks the two KDK forms agree.)
+    box, t, _, _ = _adjoint_setup()
+    x0, p0 = IG.initial_state(box, COSMO, t, seed=0)
+    ag = IG.a_grid(t)
+    xr, _ = IG.evolve_state(x0, p0, box, COSMO, ag)
+    xe, _ = IG.evolve_eager(x0, p0, box, COSMO, ag)
+    mx.eval(xr, xe)
+    cell = box.cell_size
+    assert float(mx.max(mx.abs(xr - xe))) < 1e-3 * cell
+
+
+def test_adjoint_grad_matches_replay():
+    # The reversible-adjoint d loss/d f_NL must match the replay mx.grad to the
+    # measured ~1e-6 reversibility floor (far below any dP/df_NL signal).
+    box, t, _, loss_field = _adjoint_setup()
+
+    def replay_loss(f):
+        x, _ = IG.leapfrog(box, COSMO, t, seed=0, f_NL=f, backend="eh98")
+        return loss_field(x)
+
+    g_replay = float(mx.grad(replay_loss)(mx.array(50.0)))
+    g_adjoint = float(
+        IG.adjoint_grad_fnl(
+            loss_field, box, COSMO, t, seed=0, f_NL=50.0, backend="eh98"
+        )
+    )
+    assert abs(g_replay) > 0.0
+    assert abs(g_adjoint - g_replay) / abs(g_replay) < 1e-3

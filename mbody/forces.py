@@ -47,6 +47,8 @@ assignment window. The spectral kernel used here is the exact analogue of the
 LPT module and is more than accurate enough for a toy.
 """
 
+import functools
+
 import mlx.core as mx
 
 from mbody import painting as PA
@@ -105,3 +107,58 @@ def forces_on_particles(positions, box, delta=None):
     ay = PA.cic_read(gy, positions, box)
     az = PA.cic_read(gz, positions, box)
     return mx.stack([ax, ay, az], axis=1)
+
+
+@functools.lru_cache(maxsize=None)
+def _compiled_force_fn(box):
+    """An mx.compile of the paint -> solve -> read force chain for a fixed box.
+
+    Kernel-fuses the whole solve into one graph. The box-derived Fourier kernels
+    (the i k / k^2 arrays from _k_components) become baked-in constants of the
+    compiled graph, so a separate compiled function must be cached per box --
+    hence the lru_cache keyed on the (frozen, hashable) BoxConfig. A change in
+    particle count re-traces automatically, because mx.compile keys its own
+    cache on input shape; only the box-constant kernels need the manual cache.
+    """
+
+    def _force(positions):
+        return forces_on_particles(positions, box)
+
+    return mx.compile(_force)
+
+
+def make_force_fn(box, compiled=False, checkpoint=False):
+    """Build the per-step force callable f(positions) -> (n_particles, 3) accel.
+
+    This is what the leapfrog calls once per step. Two orthogonal wrappers:
+
+    - `compiled`: return the mx.compile'd (kernel-fused) solve from
+      `_compiled_force_fn` -- numerically identical to the eager solve up to
+      float32 reassociation (the same round-off floor as the CIC scatter-add,
+      well below any dP/df_NL signal). Measured ~1x on this FFT-bound model: the
+      Metal FFTs dominate, so there is little elementwise work to fuse. Kept
+      because it is correct, harmless, and may help as the elementwise share
+      grows (2LPT, richer bias).
+    - `checkpoint`: wrap in mx.checkpoint so the solve's intermediates are
+      recomputed in the backward pass. Grad is identical to replay, but -- MEASURED
+      -- this does NOT reduce reverse-mode peak memory here, at any granularity.
+      The PM solve is near-linear (FFT, kernel multiply, scatter/gather), and the
+      VJP of a linear op needs no saved forward activation, so MLX's lazy graph
+      already keeps per-step memory minimal: there is nothing to recompute-away.
+      The real O(1)-in-steps memory lever is the reversible adjoint
+      (integrate.adjoint_grad_fnl), not checkpointing. Kept as correct plumbing
+      tied to TimeStepping.memory_mode. Compose order is checkpoint-of-compiled.
+
+    With both flags False this is exactly the eager `forces_on_particles`, so the
+    default leapfrog behaviour is unchanged.
+    """
+    if compiled:
+        fn = _compiled_force_fn(box)
+    else:
+
+        def fn(positions):
+            return forces_on_particles(positions, box)
+
+    if checkpoint:
+        fn = mx.checkpoint(fn)
+    return fn

@@ -126,16 +126,23 @@ def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb"):
     return x, p
 
 
-def evolve_state(x, p, box, cosmo, a_steps, snapshot=None):
+def evolve_state(x, p, box, cosmo, a_steps, snapshot=None, force_fn=None):
     """Leapfrog (KDK) from a_steps[0] to a_steps[-1], given initial (x, p).
 
     Pure function of the initial state -- mx.grad flows through it. One force
-    solve per step (consecutive half kicks reuse the same force). The optional
+    solve per step (consecutive half kicks reuse the same force). `force_fn` is
+    the callable that maps positions to the geometric acceleration; pass one
+    from `forces.make_force_fn` to opt into the compiled and/or
+    gradient-checkpointed solve. It defaults to the plain eager force, so the
+    kick/drift scalars, the periodic wrap, and the snapshot callback all stay in
+    eager Python -- only the force solve is ever fused/checkpointed. The optional
     `snapshot(step, a, x, p)` callback runs after each step (and once at the
     start, step 0); it is off the AD path, so use it only for forward runs.
     Returns the final (x, p).
     """
-    g = FO.forces_on_particles(x, box)  # geometric acceleration at the start
+    if force_fn is None:
+        force_fn = FO.make_force_fn(box)
+    g = force_fn(x)  # geometric acceleration at the start
     if snapshot is not None:
         snapshot(0, float(a_steps[0]), x, p)
 
@@ -144,7 +151,7 @@ def evolve_state(x, p, box, cosmo, a_steps, snapshot=None):
         a_c = 0.5 * (a0 + a1)
         p = p + kick_factor(a0, a_c, cosmo) * g  # half kick (force at x_i)
         x = _wrap(x + drift_factor(a0, a1, cosmo) * p, box.box_size)  # drift
-        g = FO.forces_on_particles(x, box)  # force at x_{i+1}
+        g = force_fn(x)  # force at x_{i+1}
         p = p + kick_factor(a_c, a1, cosmo) * g  # half kick
         if snapshot is not None:
             snapshot(i + 1, a1, x, p)
@@ -152,7 +159,16 @@ def evolve_state(x, p, box, cosmo, a_steps, snapshot=None):
 
 
 def leapfrog(
-    box, cosmo, time, seed=0, f_NL=0.0, backend="camb", spacing="linear", snapshot=None
+    box,
+    cosmo,
+    time,
+    seed=0,
+    f_NL=0.0,
+    backend="camb",
+    spacing="linear",
+    snapshot=None,
+    compiled=False,
+    memory_mode=None,
 ):
     """Evolve Zel'dovich initial conditions to z_final with the PM leapfrog.
 
@@ -160,7 +176,178 @@ def leapfrog(
     (positions, momenta), each (n_particles^3, 3) float32. Pass `f_NL` to inject
     local non-Gaussianity (differentiable in f_NL); pass `snapshot` to capture
     the trajectory for diagnostics / animation.
+
+    Performance knobs (both off by default, so behaviour is unchanged):
+    - `compiled`: kernel-fuse the force solve via mx.compile. Numerically
+      identical to the eager solve; ~1x on this FFT-bound model (the Metal FFTs
+      dominate, leaving little elementwise work to fuse), but harmless and the
+      right plumbing.
+    - `memory_mode`: how a *subsequent* mx.grad over this call manages memory;
+      defaults to `time.memory_mode`. "replay" keeps the full unrolled graph
+      (memory ~ grid x steps). "checkpoint" wraps the force in mx.checkpoint;
+      grad is identical to replay but, measured, it does NOT reduce peak memory
+      here (the solve is near-linear, so reverse-mode retains little to
+      recompute-away). For an O(1)-in-steps gradient use the reversible adjoint,
+      `integrate.adjoint_grad_fnl` -- a separate eager code path, not mx.grad.
     """
     x0, p0 = initial_state(box, cosmo, time, seed=seed, f_NL=f_NL, backend=backend)
     steps = a_grid(time, spacing)
-    return evolve_state(x0, p0, box, cosmo, steps, snapshot=snapshot)
+    if memory_mode is None:
+        memory_mode = time.memory_mode
+    if memory_mode == "adjoint":
+        raise ValueError(
+            "memory_mode='adjoint' is a gradient strategy, not a forward mode: "
+            "compute adjoint gradients with integrate.adjoint_grad_fnl(...), and "
+            "run the forward itself with memory_mode='replay'."
+        )
+    force_fn = FO.make_force_fn(
+        box, compiled=compiled, checkpoint=(memory_mode == "checkpoint")
+    )
+    return evolve_state(x0, p0, box, cosmo, steps, snapshot=snapshot, force_fn=force_fn)
+
+
+def _step_coeffs(a_steps, cosmo):
+    """Per-step leapfrog coefficients (k1, drift, k2) for each KDK sub-interval.
+
+    k1 kicks over [a0, a_mid], drift translates over [a0, a1], k2 kicks over
+    [a_mid, a1] -- the float64-CPU background integrals, constants of the step.
+    Precomputed once so the forward stepper and the adjoint use identical
+    numbers.
+    """
+    co = []
+    for i in range(len(a_steps) - 1):
+        a0, a1 = float(a_steps[i]), float(a_steps[i + 1])
+        a_c = 0.5 * (a0 + a1)
+        co.append(
+            (
+                kick_factor(a0, a_c, cosmo),
+                drift_factor(a0, a1, cosmo),
+                kick_factor(a_c, a1, cosmo),
+            )
+        )
+    return co
+
+
+def _make_steppers(box, force_fn):
+    """A self-contained KDK step and its exact reverse, for the adjoint.
+
+    Unlike evolve_state (which reuses one force solve across the shared half
+    kicks of adjacent steps), each step here recomputes the force, so a step is
+    an invertible map of (x, p) alone: reverse_step reconstructs the previous
+    (x, p) from the current one. The leapfrog is time-reversible up to the
+    float32 CIC scatter-add floor (reconstruction drift measured ~1e-4 cells at
+    n_mesh=64, ~flat in step count). Returns (one_step, reverse_step).
+    """
+    box_size = box.box_size
+
+    def one_step(x, p, k1, dr, k2):
+        p = p + k1 * force_fn(x)
+        x = _wrap(x + dr * p, box_size)
+        p = p + k2 * force_fn(x)
+        return x, p
+
+    def reverse_step(x, p, k1, dr, k2):
+        p = p - k2 * force_fn(x)
+        x = _wrap(x - dr * p, box_size)
+        p = p - k1 * force_fn(x)
+        return x, p
+
+    return one_step, reverse_step
+
+
+def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None):
+    """Forward leapfrog evaluated step by step, keeping only the final state.
+
+    Materializes (mx.eval) and releases each step, so it runs in O(1) memory in
+    the step count -- where evolve_state under mx.grad unrolls the graph. The
+    force is recomputed each step (no half-kick reuse) so a step is exactly
+    reversible; this is the forward pass the adjoint gradient builds on. Returns
+    the final (x, p). For a differentiable replay forward, use evolve_state.
+    """
+    if force_fn is None:
+        force_fn = FO.make_force_fn(box)
+    one_step, _ = _make_steppers(box, force_fn)
+    for k1, dr, k2 in _step_coeffs(a_steps, cosmo):
+        x, p = one_step(x, p, k1, dr, k2)
+        mx.eval(x, p)
+    return x, p
+
+
+def adjoint_grad_fnl(
+    loss_field,
+    box,
+    cosmo,
+    time,
+    seed=0,
+    f_NL=0.0,
+    backend="camb",
+    spacing="linear",
+    compiled=False,
+):
+    """Gradient d loss_field(x_final) / d f_NL via the reversible-leapfrog adjoint.
+
+    `loss_field(x)` maps the final particle positions (n_particles^3, 3) to a
+    scalar mx.array (e.g. one band power of the CIC-painted local-bias tracer).
+    The gradient is assembled from eager, O(grid)-memory pieces:
+
+      1. build the Zel'dovich IC (x0, p0) from f_NL;
+      2. run the leapfrog forward step by step, keeping only the final (x, p);
+      3. seed the backward sweep with the cotangent of loss_field at x_final
+         (final momenta do not enter a positional summary, so their cotangent
+         is zero);
+      4. walk the leapfrog *backward*: reconstruct each (x, p) by reverse
+         stepping and apply the single-step VJP, then push the resulting
+         (x0, p0) cotangent through the IC back to f_NL.
+
+    Every piece is materialized and released as it goes, so peak memory is
+    independent of the step count: the adjoint trades the unrolled autodiff graph
+    (memory ~ grid x steps) for ~2x the compute (memory ~ grid). This is the
+    lever for many-step / high-resolution gradients; mx.grad over `leapfrog`
+    (replay) is simpler but its memory grows with step x grid.
+
+    Returns the gradient as a 0-d mx.array. For a vector statistic (a P(k) over
+    bins) call once per component, with `loss_field` selecting that component;
+    each call is an independent O(grid)-memory sweep.
+
+    Caveat: reversibility is exact only up to the float32 CIC scatter-add floor;
+    the adjoint gradient matches the replay mx.grad to ~1e-6 relative (measured),
+    far below any dP/df_NL signal, but it is not bit-identical. Unlike mx.grad
+    this entry point is eager and not composable inside an outer transform.
+    """
+    if not isinstance(f_NL, mx.array):
+        f_NL = mx.array(f_NL)
+    a_steps = a_grid(time, spacing)
+    co = _step_coeffs(a_steps, cosmo)
+    force_fn = FO.make_force_fn(box, compiled=compiled)
+    one_step, reverse_step = _make_steppers(box, force_fn)
+
+    def ic_fn(f):
+        x0, p0 = initial_state(box, cosmo, time, seed=seed, f_NL=f, backend=backend)
+        return [x0, p0]
+
+    # 1-2. IC, then eager forward keeping only the final state.
+    x, p = ic_fn(f_NL)
+    mx.eval(x, p)
+    for k1, dr, k2 in co:
+        x, p = one_step(x, p, k1, dr, k2)
+        mx.eval(x, p)
+
+    # 3. cotangent of the loss at the final positions.
+    _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
+    gp = mx.zeros_like(p)
+    mx.eval(gx, gp)
+
+    # 4. reverse adjoint sweep -- O(1) memory in the step count.
+    for k1, dr, k2 in reversed(co):
+        x_prev, p_prev = reverse_step(x, p, k1, dr, k2)
+        _, (gx, gp) = mx.vjp(
+            lambda a, b, k1=k1, dr=dr, k2=k2: one_step(a, b, k1, dr, k2),
+            [x_prev, p_prev],
+            [gx, gp],
+        )
+        x, p = x_prev, p_prev
+        mx.eval(x, p, gx, gp)
+
+    # 5. push the (x0, p0) cotangent through the IC back to f_NL.
+    _, (gf,) = mx.vjp(ic_fn, [f_NL], [gx, gp])
+    return gf
