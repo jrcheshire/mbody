@@ -106,3 +106,102 @@ def power_spectrum(delta, box, dk=None, kmin=None, kmax=None):
 
     good = counts > 0
     return centers[good], sum_p[good] / counts[good], counts[good]
+
+
+def _shell_mask(k_mag, k_lo, k_hi):
+    """Boolean mask selecting the |k| shell [k_lo, k_hi) on the rfftn half-grid.
+
+    Half-open so adjacent shells of width dk tile without double-counting a mode
+    on a bin edge. k_mag is the float64 (N, N, N//2 + 1) array from k_grid.
+    """
+    return (k_mag >= k_lo) & (k_mag < k_hi)
+
+
+def _band_fields(delta, box, centers, dk):
+    """Real-space band-filtered fields for the Scoccimarro bispectrum estimator.
+
+    For each shell center kc in `centers` builds two real (N, N, N) MLX fields:
+
+        I[kc](x) = irfftn(delta_k * Theta),   J[kc](x) = irfftn(Theta),
+
+    where Theta is the indicator of the shell [kc - dk/2, kc + dk/2) and
+    delta_k = rfftn(delta). I carries the data; J is the "field replaced by
+    ones" field whose triple product counts closeable triangles. Returns
+    (I_fields, J_fields) dicts keyed by the exact float center, so callers must
+    look configs up with the same float objects they passed in. Differentiable
+    in `delta` (the masks are constants), so it backs both the numeric estimator
+    and the autodiff entry point below.
+    """
+    N = box.n_mesh
+    _, _, k_mag = k_grid(box)
+    delta_k = mx.fft.rfftn(delta)
+    I_fields, J_fields = {}, {}
+    for kc in centers:
+        mask = _shell_mask(k_mag, kc - 0.5 * dk, kc + 0.5 * dk)
+        theta = P.as_complex(mx.array(mask.astype(np.float32)))
+        I_fields[kc] = mx.fft.irfftn(delta_k * theta, s=(N, N, N), axes=(0, 1, 2))
+        J_fields[kc] = mx.fft.irfftn(theta, s=(N, N, N), axes=(0, 1, 2))
+    return I_fields, J_fields
+
+
+def bispectrum(delta, box, triangles, dk=None):
+    """Binned bispectrum B(k1, k2, k3) via the Scoccimarro FFT estimator.
+
+    For each triangle the estimator is
+
+        B = (V^2 / N^9) * sum_x I1 I2 I3 / sum_x J1 J2 J3,   V = L^3,
+
+    with I, J the band-filtered fields from `_band_fields`. The V^2/N^9 prefactor
+    is exact in the same DFT convention that fixes power_spectrum's V/N^6 (the
+    triangle-count cancels between data and the J normalization), so a correct
+    field returns B with no free constant. Real-space sums are reduced in
+    float64 on the CPU stream, because the triple product of zero-mean
+    band-limited fields cancels heavily and float32 accumulation is not safe.
+
+    Parameters
+    ----------
+    delta : real (N, N, N) field.
+    triangles : sequence of (k1, k2, k3) shell-center wavenumbers (h/Mpc). Fully
+        general -- squeezed, equilateral, anything that closes; configs whose
+        bins cannot form a triangle return n_tri = 0 (B is then meaningless).
+    dk : shell width (h/Mpc); defaults to the fundamental, matching
+        power_spectrum.
+
+    Returns (B, n_tri) as float64 numpy arrays, one entry per triangle. n_tri is
+    the integer count of mode-triplets in the bin (a sampling diagnostic: small
+    counts are noisy).
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    centers = sorted({float(k) for tri in triangles for k in tri})
+    I_fields, J_fields = _band_fields(delta, box, centers, dk)
+
+    alpha = L**6 / N**9
+    B = np.empty(len(triangles), dtype=np.float64)
+    n_tri = np.empty(len(triangles), dtype=np.float64)
+    for t, (k1, k2, k3) in enumerate(triangles):
+        k1, k2, k3 = float(k1), float(k2), float(k3)
+        S = float(P.accurate_sum(I_fields[k1] * I_fields[k2] * I_fields[k3]))
+        norm = float(P.accurate_sum(J_fields[k1] * J_fields[k2] * J_fields[k3]))
+        B[t] = alpha * S / norm
+        n_tri[t] = N**6 * norm  # mode-triplet count (J product = count / N^6)
+    return B, n_tri
+
+
+def bispectrum_single(delta, box, triangle, dk=None):
+    """Single-triangle bispectrum as a differentiable MLX scalar.
+
+    Same estimator as `bispectrum` for one (k1, k2, k3), but reduced with a
+    float32 GPU sum and returned as a 0-d MLX array so mx.grad flows through to
+    delta (and, via ic.linear_density, to f_NL). Use `bispectrum` for accurate
+    numeric values; use this where a differentiable summary statistic is needed.
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    k1, k2, k3 = float(triangle[0]), float(triangle[1]), float(triangle[2])
+    I_fields, J_fields = _band_fields(delta, box, sorted({k1, k2, k3}), dk)
+    S = mx.sum(I_fields[k1] * I_fields[k2] * I_fields[k3])
+    norm = mx.sum(J_fields[k1] * J_fields[k2] * J_fields[k3])
+    return (L**6 / N**9) * S / norm
