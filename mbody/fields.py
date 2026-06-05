@@ -205,3 +205,50 @@ def bispectrum_single(delta, box, triangle, dk=None):
     S = mx.sum(I_fields[k1] * I_fields[k2] * I_fields[k3])
     norm = mx.sum(J_fields[k1] * J_fields[k2] * J_fields[k3])
     return (L**6 / N**9) * S / norm
+
+
+def _bin_masks(box, k_bins, dk):
+    """Boolean shell masks (as float32 MLX arrays) and their mode counts for a
+    list of bin centers, on the rfftn half-grid. Shared by the band powers."""
+    _, _, k_mag = k_grid(box)
+    masks, counts = [], []
+    for kc in k_bins:
+        m = _shell_mask(k_mag, kc - 0.5 * dk, kc + 0.5 * dk).astype(np.float32)
+        masks.append(mx.array(m))
+        counts.append(float(m.sum()))
+    return masks, counts
+
+
+def band_power(delta, box, k_bins, dk=None):
+    """Differentiable band power P(k) of a real field over fixed |k| shells.
+
+    P[b] = (V / N^6) sum_{shell b} |delta_k|^2 / count_b -- the same
+    normalization as power_spectrum, but with fixed boolean masks (not a numpy
+    histogram), so it returns an MLX vector and mx.grad / mx.jvp flow through to
+    delta. `k_bins` are shell centers (h/Mpc); `dk` defaults to the fundamental.
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    masks, counts = _bin_masks(box, k_bins, dk)
+    p_modes = mx.abs(mx.fft.rfftn(delta)) ** 2
+    norm = L**3 / N**6
+    bins = [norm * mx.sum(mk * p_modes) / c for mk, c in zip(masks, counts)]
+    return mx.stack(bins)
+
+
+def cross_power(delta_a, delta_b, box, k_bins, dk=None):
+    """Differentiable cross power P_ab(k) of two real fields over |k| shells.
+
+    P_ab[b] = (V / N^6) sum_{shell b} Re(a_k conj(b_k)) / count_b. Returns an MLX
+    vector; cross_power(d, d) equals band_power(d). Same conventions as
+    band_power.
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    masks, counts = _bin_masks(box, k_bins, dk)
+    cross = mx.real(mx.fft.rfftn(delta_a) * mx.conj(mx.fft.rfftn(delta_b)))
+    norm = L**3 / N**6
+    bins = [norm * mx.sum(mk * cross) / c for mk, c in zip(masks, counts)]
+    return mx.stack(bins)

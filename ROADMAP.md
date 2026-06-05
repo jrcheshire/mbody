@@ -120,12 +120,28 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
 
 ## Step 5 -- the headline: autodiff dlnP/df_NL
 
-- Differentiate the measured `P(k)` (or a band power) with respect to `f_NL`
-  through the entire pipeline with `mx.grad`.
-- Overlay against the analytic Dalal et al. (2008) scale-dependent bias
-  `Delta b(k) ~ f_NL / k^2` (here the matter-field analogue / the large-scale
-  `dlnP/df_NL` shape).
-- This closes the loop and is the project's "it works" figure.
+The matter power spectrum has no O(f_NL) term (`dlnP_matter/df_NL = 0`; the
+correction is a Gaussian 3-point that vanishes), so the Dalal `1/k^2` is shown
+on a **biased tracer**, with the matter field as the null contrast. Tracer =
+Eulerian local quadratic bias `delta_h = b1 delta + (b2/2)(delta^2 - <delta^2>)`,
+whose f_NL response enters via the squeezed bispectrum (Step 4 physics).
+
+- DONE (Stage 5a, linear field): `mbody/fields.py` differentiable `band_power` /
+  `cross_power` (fixed |k| shells, not a histogram); `mbody/bias.py`
+  `local_bias_tracer` + `scale_dependent_shape` (1/M(k), the Dalal reference).
+  `mx.grad` of the tracer's dlnP/df_NL matches a matched-phase finite difference
+  to ~1e-4, tracks 1/M(k) at large scales, and the matter field is a ~1% null.
+  `tests/test_bias.py`, `scripts/probe_fnl_bias.py`,
+  `scripts/plot_dlnp_dfnl.py` -> `outputs/dlnp_dfnl_linear.png`.
+  NOTE: forward-mode `mx.jvp` is wrong through the FFT (returns ~half); use
+  reverse-mode `mx.grad`.
+- NEXT (Stage 5b, PM): thread `f_NL` through `lpt.zeldovich_displacement` and
+  `integrate.{initial_state,leapfrog}` (via `ic.linear_density`), apply the
+  tracer to the CIC-painted evolved field, and differentiate dlnP/df_NL through
+  the whole unrolled leapfrog -- showing the large-scale 1/k^2 survives.
+- Amplitude: the 1/M(k) overlay is shape-only (normalized at the largest scale);
+  a first-principles `b_phi` and the universality relation
+  `b_phi = 2 delta_c (b1-1)` are Stretch (the variance-modulation tracer).
 
 ## Stretch
 
