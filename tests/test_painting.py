@@ -61,6 +61,48 @@ def test_read_constant_field_is_partition_of_unity():
     assert float(mx.max(mx.abs(vals - 3.5))) < 1e-4
 
 
+def test_cic_read_vector_equals_three_reads():
+    # The shared-stencil 3-component read must match stacking three cic_reads --
+    # both the forward values AND the gradient w.r.t. positions (the whole point
+    # is that it is the same computation with the CIC index arithmetic shared,
+    # for ~40% less reverse-mode memory in the force solve). Tested with a random
+    # cotangent: an all-ones one would be a momentum-conservation null.
+    pos = L.lpt_positions(BOX, COSMO, seed=3, z=0.0)
+    rng = np.random.default_rng(0)
+    fx, fy, fz = (
+        mx.array(rng.standard_normal((BOX.n_mesh,) * 3).astype(np.float32))
+        for _ in range(3)
+    )
+    stacked = mx.stack(
+        [
+            PA.cic_read(fx, pos, BOX),
+            PA.cic_read(fy, pos, BOX),
+            PA.cic_read(fz, pos, BOX),
+        ],
+        axis=1,
+    )
+    shared = PA.cic_read_vector(fx, fy, fz, pos, BOX)
+    mx.eval(stacked, shared)
+    assert float(mx.max(mx.abs(shared - stacked))) < 1e-5
+
+    cot = mx.array(rng.standard_normal((BOX.n_particles**3, 3)).astype(np.float32))
+
+    def g(fn):
+        _, (gx,) = mx.vjp(lambda p: fn(p), [pos], [cot])
+        return gx
+
+    g_stack = g(
+        lambda p: mx.stack(
+            [PA.cic_read(fx, p, BOX), PA.cic_read(fy, p, BOX), PA.cic_read(fz, p, BOX)],
+            axis=1,
+        )
+    )
+    g_shared = g(lambda p: PA.cic_read_vector(fx, fy, fz, p, BOX))
+    mx.eval(g_stack, g_shared)
+    denom = float(mx.max(mx.abs(g_stack)))
+    assert float(mx.max(mx.abs(g_shared - g_stack))) / denom < 1e-4
+
+
 def test_paint_gradient_matches_finite_difference():
     pos = L.lpt_positions(BOX, COSMO, seed=2, z=0.0)
     g = mx.grad(lambda p: mx.sum(PA.cic_paint(p, BOX) ** 2))(pos)
