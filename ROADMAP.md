@@ -135,10 +135,17 @@ whose f_NL response enters via the squeezed bispectrum (Step 4 physics).
   `scripts/plot_dlnp_dfnl.py` -> `outputs/dlnp_dfnl_linear.png`.
   NOTE: forward-mode `mx.jvp` is wrong through the FFT (returns ~half); use
   reverse-mode `mx.grad`.
-- NEXT (Stage 5b, PM): thread `f_NL` through `lpt.zeldovich_displacement` and
-  `integrate.{initial_state,leapfrog}` (via `ic.linear_density`), apply the
-  tracer to the CIC-painted evolved field, and differentiate dlnP/df_NL through
-  the whole unrolled leapfrog -- showing the large-scale 1/k^2 survives.
+- DONE (Stage 5b, PM): `f_NL` is threaded through `lpt.zeldovich_displacement`
+  and `integrate.{initial_state,leapfrog}` (via `ic.linear_density`), so the
+  whole forward model `f_NL -> LPT -> PM leapfrog -> CIC -> tracer -> P(k)` is
+  differentiable. `mx.grad` of dlnP/df_NL through the unrolled leapfrog matches
+  a matched-phase FD to ~5e-3 (the CIC scatter-add floor). The f_NL signal
+  survives evolution (large-scale dlnP/df_NL ~13x the matter null) but its shape
+  flattens vs the linear 1/M(k) -- nonlinear evolution + CIC + the Eulerian bias
+  mix scales (the real-world complication behind the b_phi systematic), so the
+  clean Dalal 1/k^2 is a linear-theory result. `scripts/plot_dlnp_dfnl_pm.py`
+  -> `outputs/dlnp_dfnl_pm.png`. The end-to-end differentiability is the
+  headline; the clean 1/M(k) lives in Stage 5a.
 - Amplitude: the 1/M(k) overlay is shape-only (normalized at the largest scale);
   a first-principles `b_phi` and the universality relation
   `b_phi = 2 delta_c (b1-1)` are Stretch (the variance-modulation tracer).

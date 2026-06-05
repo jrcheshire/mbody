@@ -102,14 +102,16 @@ def _wrap(x, box_size):
     return x - box_size * mx.floor(x / box_size)
 
 
-def initial_state(box, cosmo, time, seed=0, backend="camb"):
+def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb"):
     """Zel'dovich initial conditions (positions and momenta) at z_init.
 
     Positions x = q + D(a_i) Psi_0; momenta p = a_i^2 E(a_i) D(a_i) f(a_i) Psi_0
     (the growing-mode velocity). Both are (n_particles^3, 3) float32 arrays;
-    momenta are in the H0 = 1 units used by the stepper.
+    momenta are in the H0 = 1 units used by the stepper. `f_NL` (an mx scalar
+    when differentiating) flows into the displacement via ic.linear_density, so
+    the whole evolved state is differentiable in f_NL.
     """
-    psi = L.zeldovich_displacement(box, cosmo, seed=seed, backend=backend)
+    psi = L.zeldovich_displacement(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
     a_i = 1.0 / (1.0 + time.z_init)
     D = C.growth_factor(time.z_init, cosmo)
     f = C.growth_rate(time.z_init, cosmo)
@@ -149,13 +151,16 @@ def evolve_state(x, p, box, cosmo, a_steps, snapshot=None):
     return x, p
 
 
-def leapfrog(box, cosmo, time, seed=0, backend="camb", spacing="linear", snapshot=None):
+def leapfrog(
+    box, cosmo, time, seed=0, f_NL=0.0, backend="camb", spacing="linear", snapshot=None
+):
     """Evolve Zel'dovich initial conditions to z_final with the PM leapfrog.
 
     Convenience wrapper: build the initial state and step it. Returns the final
-    (positions, momenta), each (n_particles^3, 3) float32. Pass `snapshot` to
-    capture the trajectory for diagnostics / animation.
+    (positions, momenta), each (n_particles^3, 3) float32. Pass `f_NL` to inject
+    local non-Gaussianity (differentiable in f_NL); pass `snapshot` to capture
+    the trajectory for diagnostics / animation.
     """
-    x0, p0 = initial_state(box, cosmo, time, seed=seed, backend=backend)
+    x0, p0 = initial_state(box, cosmo, time, seed=seed, f_NL=f_NL, backend=backend)
     steps = a_grid(time, spacing)
     return evolve_state(x0, p0, box, cosmo, steps, snapshot=snapshot)

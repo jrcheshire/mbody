@@ -35,7 +35,7 @@ import mlx.core as mx
 import numpy as np
 
 from mbody import cosmology as C
-from mbody import fields as F
+from mbody import ic as IC
 from mbody import precision as P
 
 
@@ -62,15 +62,18 @@ def _k_components(box):
     return ikx, iky, ikz, mx.array(inv_k2)
 
 
-def zeldovich_displacement(box, cosmo, seed=0, backend="camb"):
+def zeldovich_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb"):
     """First-order (Zel'dovich) displacement field, normalized to z = 0.
 
     Returns (psi_x, psi_y, psi_z), each a real float32 MLX array of shape
     (n_mesh, n_mesh, n_mesh), in Mpc/h. Multiply by D(z) for the displacement
-    at redshift z.
+    at redshift z. The source density is ic.linear_density, so passing `f_NL`
+    (as an mx scalar) injects local non-Gaussianity and keeps the whole
+    displacement -- and anything built on it -- differentiable in f_NL; f_NL = 0
+    recovers the Gaussian field (to FFT round-off).
     """
     N = box.n_mesh
-    delta0 = F.gaussian_random_field(box, cosmo, seed=seed, z=0.0, backend=backend)
+    delta0 = IC.linear_density(box, cosmo, seed=seed, z=0.0, f_NL=f_NL, backend=backend)
     dk = mx.fft.rfftn(delta0)
     ikx, iky, ikz, inv_k2 = _k_components(box)
     # i k_j / k^2 colours the noise into a displacement. This is exact for all
@@ -124,12 +127,12 @@ def displace(box, psi, growth):
     return mx.stack([x.reshape(-1), y.reshape(-1), z.reshape(-1)], axis=1)
 
 
-def lpt_positions(box, cosmo, seed=0, z=0.0, backend="camb"):
+def lpt_positions(box, cosmo, seed=0, z=0.0, f_NL=0.0, backend="camb"):
     """Particle positions at redshift z under the Zel'dovich approximation.
 
     Convenience wrapper: build the z=0 displacement and scale it by D(z).
     """
     if box.n_particles != box.n_mesh:
         raise ValueError("LPT currently assumes n_particles == n_mesh")
-    psi = zeldovich_displacement(box, cosmo, seed=seed, backend=backend)
+    psi = zeldovich_displacement(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
     return displace(box, psi, C.growth_factor(z, cosmo))

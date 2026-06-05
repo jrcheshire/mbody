@@ -12,15 +12,18 @@ scripts/probe_fnl_bias.py, not guessed.
 import mlx.core as mx
 import numpy as np
 
-from mbody.config import BoxConfig, Cosmology
+from mbody.config import BoxConfig, Cosmology, TimeStepping
 from mbody import fields as F
 from mbody import ic as IC
 from mbody import bias as B
+from mbody import integrate as IN
+from mbody import painting as PA
 
 COSMO = Cosmology()
 # L = 256 gives a small fundamental (low-k reach for the 1/k^2 shape); n = 32
 # keeps the per-bin reverse-mode grads fast.
 BOX = BoxConfig(box_size=256.0, n_mesh=32, n_particles=32)
+TIME = TimeStepping(z_init=9.0, z_final=0.0, n_steps=3)
 B1, B2 = 2.0, 1.0
 EPS = 50.0
 NSEED = 8
@@ -130,3 +133,64 @@ def test_scale_dependent_shape_is_inverse_M():
     M = IC.poisson_M(kb, COSMO)
     assert np.allclose(shape, 1.0 / M, rtol=1e-10)
     assert np.all(np.diff(shape) < 0)  # falls with k
+
+
+# --- Stage 5b: dlnP/df_NL through the full differentiable PM pipeline ---
+
+
+def _pm_tracer_power(f_NL, seed, kb, b2=B2):
+    """P(k) of the local-bias tracer of the PM-evolved (CIC-painted) field."""
+    x, _ = IN.leapfrog(BOX, COSMO, TIME, seed=seed, f_NL=f_NL)
+    delta = PA.density_contrast(x, BOX)
+    return F.band_power(B.local_bias_tracer(delta, B1, b2), BOX, kb)
+
+
+def _pm_seed_mean_dlnp(b2, nseed):
+    kb = _kb()
+    sP = np.zeros(len(kb))
+    sdP = np.zeros(len(kb))
+    for s in range(nseed):
+        P = np.asarray(_pm_tracer_power(mx.array(0.0), s, kb, b2), np.float64)
+        dP = np.array(
+            [
+                float(
+                    mx.grad(lambda f, i=i, s=s: _pm_tracer_power(f, s, kb, b2)[i])(
+                        mx.array(0.0)
+                    )
+                )
+                for i in range(len(kb))
+            ]
+        )
+        sP += P
+        sdP += dP
+    return sdP / sP
+
+
+def test_pm_pipeline_differentiable():
+    # The project's thesis: mx.grad of dlnP/df_NL through the WHOLE forward model
+    # -- f_NL -> linear_density -> LPT -> PM leapfrog -> CIC -> tracer -> P(k) --
+    # matches a matched-phase FD. CIC scatter-add sets the floor (~5e-3) above
+    # the linear field's ~1e-4.
+    kb = _kb()
+    P = np.asarray(_pm_tracer_power(mx.array(0.0), 0, kb), np.float64)
+    dP = np.array(
+        [
+            float(mx.grad(lambda f, i=i: _pm_tracer_power(f, 0, kb)[i])(mx.array(0.0)))
+            for i in range(len(kb))
+        ]
+    )
+    lp = mx.log(_pm_tracer_power(mx.array(EPS), 0, kb))
+    lm = mx.log(_pm_tracer_power(mx.array(-EPS), 0, kb))
+    fd = np.asarray((lp - lm) / (2 * EPS), np.float64)
+    assert np.all(np.abs((dP / P) / fd - 1.0) < 1e-2)
+
+
+def test_pm_fnl_signal_survives():
+    # The f_NL signal survives evolution: the evolved tracer's large-scale
+    # dlnP/df_NL is positive and well above the matter null (measured ~13x). Its
+    # shape is flattened vs the linear 1/M(k) (nonlinear evolution + CIC mix
+    # scales), so we check survival, not the precise 1/M shape.
+    tracer = _pm_seed_mean_dlnp(B2, 4)
+    matter = _pm_seed_mean_dlnp(0.0, 4)
+    assert tracer[0] > 0 and tracer[1] > 0
+    assert tracer[0] > 3 * abs(matter[0])

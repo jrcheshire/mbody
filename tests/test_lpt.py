@@ -12,7 +12,7 @@ import numpy as np
 
 from mbody.config import BoxConfig, Cosmology
 from mbody import cosmology as C
-from mbody import fields as F
+from mbody import ic as IC
 from mbody import lpt as L
 
 COSMO = Cosmology()
@@ -30,7 +30,9 @@ def test_lagrangian_grid():
 
 def test_zeldovich_divergence_identity():
     psi = L.zeldovich_displacement(BOX, COSMO, seed=0)
-    delta0 = F.gaussian_random_field(BOX, COSMO, seed=0, z=0.0)
+    # The displacement is built from ic.linear_density (f_NL = 0 here), so the
+    # identity div(Psi) = -delta is checked against that exact source.
+    delta0 = IC.linear_density(BOX, COSMO, seed=0, z=0.0, f_NL=0.0)
     div = L.divergence(BOX, *psi)
 
     a = np.asarray(div, dtype=np.float64).ravel()
