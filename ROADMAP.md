@@ -218,7 +218,8 @@ driver ties the config to it.
 ## External convergence cross-check  [analytic + CCL done]
 
 Before trusting any number, validate the forward model against references outside
-mbody. Two layers built (a pmwd differentiable-PM peer comparison is deferred):
+mbody. Two layers built (a pmwd differentiable-PM peer comparison is deferred).
+Full writeup with the measured numbers: `docs/convergence_crosscheck.md`.
 
 - **Analytic linear theory** (`scripts/probe_pk_convergence.py`,
   `scripts/plot_convergence.py` -> `outputs/convergence.png`,
