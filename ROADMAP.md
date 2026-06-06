@@ -204,6 +204,26 @@ CIC force), though it always converges correctly and beats the exact-background
 leapfrog. fastpm stays the default. `scripts/probe_bullfrog.py` (`pixi run
 bullfrog`), `docs/bullfrog.md`.
 
+## Redshift-space distortions  [done]
+
+Opt-in `RedshiftSpace(enabled, los_axis, f_growth)` on `SimConfig`: map the final
+particles to redshift space and measure the multipoles `P_0`, `P_2`. The shift is
+`Delta_s = f_growth * p_los/(a^2 E)`, derived from mbody's H0=1 drift (no stray h
+factor; a Zeldovich field's RSD shift = f x real-displacement to ~2e-7). The
+plane-parallel estimator (`fields.band_power_multipole` raw / `power_multipoles`
+decoupled) uses a FULL fft axis for the LOS, with a discrete-shell
+`multipole_decoupling` so it recovers continuum Kaiser (`P_0`,`P_2` to a few %;
+`P_4` is noise-limited at toy box sizes). `interlaced_density_contrast` removes the
+CIC aliasing upturn near Nyquist. The autodiff Fisher is extended to
+`{f_NL,b1,b2,A,f_growth}` with linear `P_ell` data and a Gaussian mock block
+covariance; `f_NL`/`A` use the reversible adjoint with a momentum-seeded loss
+(`loss_uses_momentum`, since the redshift field depends on the final velocities).
+**Finding:** the quadrupole sharply pins `f_growth` (>10x) and partially recovers
+`sigma(f_NL)` (~1.6x), but does NOT break `b_phi*f_NL` (only the k^-2 shape +
+multi-tracer do); fingers-of-god are absent in a PM (trust k < ~0.1 h/Mpc).
+`scripts/probe_rsd.py` (`pixi run rsd`), `plot_rsd_multipoles` / `plot_fisher_rsd`,
+`docs/rsd.md`.
+
 ## Stretch
 
 - Gradients w.r.t. cosmological parameters (autodiff Fisher).

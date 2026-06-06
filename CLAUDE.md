@@ -106,6 +106,36 @@ tests/      unit + smoke tests
   default `lpt_order=2`, and `leapfrog` resolves `integrator` from `time.integrator`
   (default fastpm) -- so the loose and config paths give the same physics. Pass
   `lpt_order=1` / `integrator="exact"` explicitly for the simpler variants.
+  Redshift-space distortions are the same way: `SimConfig.rsd =
+  RedshiftSpace(enabled=False, los_axis=0, f_growth=1.0)` is OFF by default (a
+  plain run measures the real-space field); enable it to map the final particles
+  to redshift space and expose `RunResult.power_multipoles()`.
+
+## Redshift-space distortions (RSD)
+
+- Opt-in via `RedshiftSpace`. The map (`mbody.rsd.redshift_space_positions`) shifts
+  the line-of-sight coordinate by `Delta_s = f_growth * p_los/(a^2 E)` -- derived
+  from mbody's H0=1 drift, so NO stray h factor (verified: a Zeldovich field's RSD
+  shift = f x real-displacement to ~2e-7). **Use a FULL fft axis for the LOS**
+  (`los_axis` 0/1), never the rfft axis 2 (its `kz=0` plane skews the discrete
+  multipole average).
+- Multipoles: `fields.band_power_multipole` (raw, differentiable -- the Fisher
+  data vector) and `fields.power_multipoles` (diagnostic, with the discrete-shell
+  `multipole_decoupling` so it matches continuum Kaiser). **`P_0`+`P_2` are
+  science-grade; `P_4` is noise-limited at toy box sizes** (signal ~0.04 P0).
+  `fields.interlaced_density_contrast` removes the CIC aliasing upturn near Nyquist
+  (validated); the driver uses it for the redshift-space field.
+- Fisher: `fisher.{linear,pm}_multipole_jacobian` over `PARAM_NAMES_RSD =
+  {f_NL,b1,b2,A,f_growth}` with LINEAR `P_ell` data (P2 can be negative -> no log)
+  and a Gaussian mock block covariance (`multipole_gaussian_covariance`);
+  `FisherForecast` now takes `covariance=` (full) as well as `variances=` (diag).
+  `f_NL`/`A` use `adjoint_grad_ic(..., loss_uses_momentum=True)` -- the adjoint seed
+  was generalized to a loss of (x_final, p_final) because the redshift field depends
+  on the final velocities; `b1`/`b2`/`f_growth` are downstream cheap grads.
+- **Honest finding:** the quadrupole sharply pins `f_growth` (>10x) and PARTIALLY
+  recovers `sigma(f_NL)` (~1.6x), but does NOT break the `b_phi*f_NL` degeneracy
+  (only the k^-2 shape + multi-tracer do). Fingers-of-god are absent in a PM, so
+  trust RSD only at k < ~0.1 h/Mpc. See `docs/rsd.md`, `pixi run rsd`.
 
 ## External convergence cross-check
 
