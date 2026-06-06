@@ -3,7 +3,7 @@ name = "mbody"
 version = "0.1.0"
 description = "M-body: a differentiable particle-mesh N-body toy in MLX on Apple Silicon, targeting autodiff dlnP(k)/df_NL"
 requires-python = ">=3.11"
-authors = [{ name = "Jamie Cheshire" }]
+authors = [{ name = "James Cheshire", email = "cheshire@caltech.edu" }]
 dependencies = [
     "numpy",
     "scipy",
