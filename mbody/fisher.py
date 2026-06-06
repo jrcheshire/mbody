@@ -47,14 +47,21 @@ import numpy as np
 import mlx.core as mx
 
 from mbody import bias as B
+from mbody import cosmology as C
 from mbody import fields as F
 from mbody import ic as IC
 from mbody import integrate as IN
 from mbody import painting as PA
 from mbody import precision as P  # noqa: F401  (used by Jacobian builders)
+from mbody import rsd as RS
 
 # Canonical parameter order for the M-body autodiff Fisher.
 PARAM_NAMES = ("f_NL", "b1", "b2", "A")
+
+# Redshift-space Fisher adds a growth-rate amplitude f_growth (the RSD analog of
+# A): it scales the line-of-sight velocity term, fiducial 1 = the simulation's
+# own growth. See linear_multipole_jacobian / pm_multipole_jacobian.
+PARAM_NAMES_RSD = ("f_NL", "b1", "b2", "A", "f_growth")
 
 
 def band_power_log_variance(box, k_bins, dk=None):
@@ -213,41 +220,65 @@ def pm_logP_jacobian(
     return J, P_fid
 
 
-class FisherForecast:
-    """Diagonal-covariance Fisher matrix and parameter constraints.
+def _prewhitened_inverse(M):
+    """Inverse of a symmetric positive matrix via sqrt-diag prewhitening.
 
-    F_ij = sum_b J_{b,i} J_{b,j} / Var[ln P_b] (+ prior 1/sigma^2 on the
-    diagonal), with fixed parameters dropped. The Jacobian and per-bin variances
-    are passed in as plain arrays -- the forward-model Jacobian assembly
-    (linear_logP_jacobian, pm_logP_jacobian) is deliberately decoupled from this
-    pure linear-algebra object, which mirrors the ergonomics of
+    D = sqrt(diag M) gives M_w = D^-1 M D^-1 a unit diagonal and off-diagonals
+    bounded by 1, dropping the condition number by orders of magnitude before the
+    inverse; the result is unwhitened back. Used for both the band-power
+    covariance C^-1 and the Fisher F^-1.
+    """
+    d = np.sqrt(np.diag(M))
+    if np.any(d <= 0):
+        raise ValueError("non-positive diagonal in matrix to invert")
+    d_inv = 1.0 / d
+    M_w = M * np.outer(d_inv, d_inv)
+    return np.linalg.inv(M_w) * np.outer(d_inv, d_inv)
+
+
+class FisherForecast:
+    """Fisher matrix and parameter constraints, diagonal or full covariance.
+
+    F = J^T C^-1 J (+ prior 1/sigma^2 on the diagonal), with fixed parameters
+    dropped. Pass EITHER `variances` (a diagonal data covariance, e.g. the
+    plane-corrected Var[ln P_b] for the isotropic log-band-power Fisher) OR
+    `covariance` (a full data covariance, e.g. the block covariance coupling
+    redshift-space multipoles within a k-bin). The Jacobian assembly
+    (linear_logP_jacobian / pm_logP_jacobian, or the multipole variants) is
+    deliberately decoupled from this pure linear-algebra object, mirroring
     ~/cmb/cmb-augr/augr/fisher.py.
 
     Parameters
     ----------
-    jacobian : (n_bins, n_params) array, J[b, i] = d mu_b / d theta_i (mu = lnP).
-    variances : (n_bins,) array, Var[ln P_b] (from band_power_log_variance).
+    jacobian : (n_data, n_params) array, J[d, i] = d mu_d / d theta_i.
+    variances : (n_data,) diagonal data covariance (mutually exclusive with
+        `covariance`).
     fiducial_params : {name: value} of every parameter (for summary/reference).
     param_names : ordered names matching the columns of `jacobian`.
     priors : optional {name: sigma_prior}; adds 1/sigma^2 to the diagonal.
     fixed_params : optional list of names to hold fixed (drop from F).
+    covariance : (n_data, n_data) full data covariance (mutually exclusive with
+        `variances`); inverse-weighted via a prewhitened solve.
     """
 
     def __init__(
         self,
         jacobian,
-        variances,
-        fiducial_params,
+        variances=None,
+        fiducial_params=None,
         param_names=PARAM_NAMES,
         priors=None,
         fixed_params=None,
+        covariance=None,
     ):
         self.J = np.asarray(jacobian, dtype=np.float64)
-        self.variances = np.asarray(variances, dtype=np.float64)
         self.param_names = list(param_names)
-        self.fiducial = dict(fiducial_params)
+        self.fiducial = dict(fiducial_params or {})
         self.priors = dict(priors or {})
         self.fixed = list(fixed_params or [])
+
+        if (variances is None) == (covariance is None):
+            raise ValueError("pass exactly one of `variances` or `covariance`")
 
         n_bins, n_params = self.J.shape
         if n_params != len(self.param_names):
@@ -255,18 +286,35 @@ class FisherForecast:
                 f"jacobian has {n_params} columns but {len(self.param_names)} "
                 "param_names"
             )
-        if self.variances.shape != (n_bins,):
-            raise ValueError(f"variances shape {self.variances.shape} != ({n_bins},)")
-        if np.any(self.variances <= 0):
-            raise ValueError("variances must be positive")
+        if variances is not None:
+            self.variances = np.asarray(variances, dtype=np.float64)
+            self.covariance = None
+            if self.variances.shape != (n_bins,):
+                raise ValueError(
+                    f"variances shape {self.variances.shape} != ({n_bins},)"
+                )
+            if np.any(self.variances <= 0):
+                raise ValueError("variances must be positive")
+        else:
+            self.variances = None
+            self.covariance = np.asarray(covariance, dtype=np.float64)
+            if self.covariance.shape != (n_bins, n_bins):
+                raise ValueError(
+                    f"covariance shape {self.covariance.shape} != ({n_bins}, {n_bins})"
+                )
+
         self._free_names = [n for n in self.param_names if n not in self.fixed]
         self._fisher = None
         self._inverse = None
 
     def compute(self):
         """The Fisher matrix over the free parameters, (n_free, n_free)."""
-        weight = 1.0 / self.variances  # inverse band-power covariance, diagonal
-        F_full = (self.J.T * weight) @ self.J
+        if self.covariance is None:
+            weight = 1.0 / self.variances  # diagonal inverse covariance
+            F_full = (self.J.T * weight) @ self.J
+        else:
+            c_inv = _prewhitened_inverse(self.covariance)
+            F_full = self.J.T @ c_inv @ self.J
         for name, sigma in self.priors.items():
             i = self.param_names.index(name)
             F_full[i, i] += 1.0 / float(sigma) ** 2
@@ -293,16 +341,12 @@ class FisherForecast:
         the result is unwhitened back. Same trick as cmb-augr's per-bin solve.
         """
         if self._inverse is None:
-            F = self.fisher_matrix
-            d = np.sqrt(np.diag(F))
-            if np.any(d <= 0):
+            if np.any(np.diag(self.fisher_matrix) <= 0):
                 raise ValueError(
                     "non-positive Fisher diagonal; an unconstrained free "
                     "parameter needs a prior or to be fixed"
                 )
-            d_inv = 1.0 / d
-            F_w = F * np.outer(d_inv, d_inv)
-            self._inverse = np.linalg.inv(F_w) * np.outer(d_inv, d_inv)
+            self._inverse = _prewhitened_inverse(self.fisher_matrix)
         return self._inverse
 
     def _free_index(self, param):
@@ -413,3 +457,255 @@ class FisherForecast:
                 f"  {p:<8s}  {self.sigma(p):13.5g}  {self.sigma_conditional(p):13.5g}"
             )
         return "\n".join(lines)
+
+
+# --- Redshift-space multipole Fisher -----------------------------------------
+#
+# The redshift-space forecast adds the line-of-sight growth information that
+# helps pin the b1 / amplitude block and partially lift its degeneracy with
+# f_NL. Two changes from the isotropic log-band-power Fisher above:
+#
+#   * Data vector = the LINEAR multipole band powers P_ell(k) (not ln P): the
+#     quadrupole can be negative per realization, so a log is ill-defined. The
+#     multipoles are stacked ell-major (all bins of ell=0, then all of ell=2).
+#   * A full block COVARIANCE replaces the diagonal variance, because P_0 and
+#     P_2 are correlated within a k-bin. It is estimated from a Gaussian mock
+#     ensemble (the standard disconnected forecast covariance), which captures
+#     the cross-multipole and discrete-grid mode counting exactly.
+#
+# The fifth parameter f_growth (the RSD growth-rate amplitude) is downstream of
+# the trajectory -- it scales the final-state velocity shift -- so its column is
+# a cheap fixed-field mx.grad alongside b1, b2; f_NL and A remain IC-stage and
+# share the reversible adjoint, now seeded with the momentum cotangent because
+# the redshift-space field depends on the final velocities (loss_uses_momentum).
+
+
+def _redshift_tracer_linear(delta, box, b1, b2, f_eff, los_axis):
+    """Linear redshift-space tracer field, (b1 + f_eff mu^2) delta + b2 term.
+
+    The Kaiser operator carries the linear bias and the line-of-sight velocity
+    term (f_eff = f_growth * f_linear); the (b2/2)(delta^2 - <delta^2>) quadratic
+    bias is the local real-space addition (isotropic, so it lands in the monopole
+    at leading order). Differentiable in delta, b1, b2, f_eff.
+    """
+    kaiser = RS.apply_linear_kaiser(delta, box, b1, f_eff, los_axis=los_axis)
+    mean2 = float(P.accurate_mean(delta**2))
+    return kaiser + 0.5 * b2 * (delta**2 - mean2)
+
+
+def linear_multipole_jacobian(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    ells=(0, 2),
+    los_axis=0,
+    seed=0,
+    dk=None,
+    backend="camb",
+):
+    """dP_ell/dtheta for the LINEAR redshift-space tracer, theta = PARAM_NAMES_RSD.
+
+    Forward model (all MLX, differentiable):
+        delta = A * ic.linear_density(f_NL)
+        tracer_s = (b1 + f_growth f_lin mu^2) delta + (b2/2)(delta^2 - <delta^2>)
+        mu_d = P_ell(k_b)            # linear multipole band power (not log)
+    The Jacobian is built per data component with reverse-mode mx.grad. Returns
+    (J, P_fid): J is (n_ell*n_bins, 5) float64 ell-major, P_fid the fiducial
+    multipole band powers (same layout).
+    """
+    theta = mx.array([float(theta_fid[n]) for n in PARAM_NAMES_RSD])
+    f_lin = C.growth_rate(0.0, cosmo)
+    n_bins, n_ell = len(k_bins), len(ells)
+    n_data = n_bins * n_ell
+
+    def model_P(t):
+        f_NL, b1, b2, A, fg = t[0], t[1], t[2], t[3], t[4]
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
+        tracer = _redshift_tracer_linear(delta, box, b1, b2, fg * f_lin, los_axis)
+        parts = [
+            F.band_power_multipole(tracer, box, k_bins, el, los_axis=los_axis, dk=dk)
+            for el in ells
+        ]
+        return mx.concatenate(parts)
+
+    J = np.empty((n_data, len(PARAM_NAMES_RSD)), dtype=np.float64)
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: model_P(t)[d])(theta)
+        J[d, :] = np.asarray(g, dtype=np.float64)
+    P_fid = np.asarray(model_P(theta), dtype=np.float64)
+    return J, P_fid
+
+
+def pm_multipole_jacobian(
+    box,
+    cosmo,
+    time,
+    theta_fid,
+    k_bins,
+    ells=(0, 2),
+    los_axis=0,
+    seed=0,
+    dk=None,
+    backend="camb",
+    integrator=None,
+    lpt_order=2,
+):
+    """dP_ell/dtheta for the PM-EVOLVED redshift-space tracer, theta=PARAM_NAMES_RSD.
+
+    f_NL and A shape the primordial IC (evolved through LPT + the leapfrog); the
+    redshift-space map (mbody.rsd) uses the final positions AND velocities, then
+    the local-bias tracer is painted and its multipoles measured. Columns by where
+    each parameter enters:
+
+      * f_NL, A: IC-stage -> the reversible adjoint (adjoint_grad_ic) with
+        loss_uses_momentum=True, since the loss depends on the final velocities;
+        one O(grid)-memory sweep per data component returns both columns.
+      * b1, b2, f_growth: downstream -- they act on the fixed final (x, p), so a
+        cheap mx.grad at the stop_gradient'd final state (f_growth scales the RSD
+        shift).
+
+    Returns (J, P_fid): J is (n_ell*n_bins, 5) float64 ell-major, P_fid the
+    fiducial multipole band powers.
+    """
+    fid = {n: float(theta_fid[n]) for n in PARAM_NAMES_RSD}
+    z_final = time.z_final
+    n_bins, n_ell = len(k_bins), len(ells)
+    n_data = n_bins * n_ell
+    J = np.empty((n_data, len(PARAM_NAMES_RSD)), dtype=np.float64)
+
+    # Evolve once at the fiducial; the final state is fixed for the downstream cols.
+    x_final, p_final = IN.leapfrog(
+        box,
+        cosmo,
+        time,
+        seed=seed,
+        f_NL=mx.array(fid["f_NL"]),
+        amplitude=mx.array(fid["A"]),
+        backend=backend,
+        integrator=integrator,
+        lpt_order=lpt_order,
+    )
+    xf = mx.stop_gradient(x_final)
+    pf = mx.stop_gradient(p_final)
+
+    # Downstream b1, b2, f_growth: cheap mx.grad at the fixed final (x, p).
+    td = mx.array([fid["b1"], fid["b2"], fid["f_growth"]])
+
+    def downstream_P(t):
+        s = RS.redshift_space_positions(
+            xf, pf, box, cosmo, z=z_final, los_axis=los_axis, f_growth=t[2]
+        )
+        tracer = B.local_bias_tracer(PA.density_contrast(s, box), t[0], t[1])
+        parts = [
+            F.band_power_multipole(tracer, box, k_bins, el, los_axis=los_axis, dk=dk)
+            for el in ells
+        ]
+        return mx.concatenate(parts)
+
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: downstream_P(t)[d])(td)
+        J[d, 1] = float(g[0])  # b1
+        J[d, 2] = float(g[1])  # b2
+        J[d, 4] = float(g[2])  # f_growth
+    P_fid = np.asarray(downstream_P(td), dtype=np.float64)
+
+    # IC columns f_NL, A: the shared trajectory adjoint, one sweep per component.
+    def make_loss(ell, b):
+        def loss_field(x, p):
+            s = RS.redshift_space_positions(
+                x,
+                p,
+                box,
+                cosmo,
+                z=z_final,
+                los_axis=los_axis,
+                f_growth=fid["f_growth"],
+            )
+            tracer = B.local_bias_tracer(
+                PA.density_contrast(s, box), fid["b1"], fid["b2"]
+            )
+            return F.band_power_multipole(
+                tracer, box, k_bins, ell, los_axis=los_axis, dk=dk
+            )[b]
+
+        return loss_field
+
+    for d in range(n_data):
+        ell, b = ells[d // n_bins], d % n_bins
+        g_ic = IN.adjoint_grad_ic(
+            make_loss(ell, b),
+            box,
+            cosmo,
+            time,
+            seed=seed,
+            f_NL=fid["f_NL"],
+            amplitude=fid["A"],
+            backend=backend,
+            integrator=integrator,
+            lpt_order=lpt_order,
+            loss_uses_momentum=True,
+        )
+        J[d, 0] = float(g_ic[0])  # f_NL
+        J[d, 3] = float(g_ic[1])  # A
+    return J, P_fid
+
+
+def multipole_gaussian_covariance(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    ells=(0, 2),
+    los_axis=0,
+    n_mock=400,
+    seed0=1000,
+    dk=None,
+    backend="camb",
+    hartlap=True,
+):
+    """Gaussian (disconnected) covariance of the multipole band powers, from mocks.
+
+    Generates n_mock Gaussian realizations of the linear redshift-space tracer at
+    the fiducial parameters, measures the raw multipole band powers, and returns
+    their sample covariance (n_ell*n_bins, ell-major). This is the standard
+    Gaussian forecast covariance: it captures the cross-multipole correlation and
+    the discrete-grid / rfft-plane mode counting exactly, because it is the sample
+    covariance of the very estimator the Jacobian differentiates. Used for both
+    the linear and PM forecasts (the PM nonlinearity enters the Jacobian/signal,
+    not this disconnected covariance -- documented as the forecast approximation).
+    With hartlap=True the covariance is scaled by 1/h, h=(n_mock-n_data-2)/(n_mock-1),
+    so a Fisher's inverse-covariance is the unbiased (Hartlap-corrected) precision.
+    """
+    f_lin = C.growth_rate(0.0, cosmo)
+    b1, b2 = float(theta_fid["b1"]), float(theta_fid["b2"])
+    A, fg, fnl = (
+        float(theta_fid["A"]),
+        float(theta_fid["f_growth"]),
+        float(theta_fid["f_NL"]),
+    )
+    n_bins, n_ell = len(k_bins), len(ells)
+    n_data = n_bins * n_ell
+
+    data = np.empty((n_mock, n_data), dtype=np.float64)
+    for m in range(n_mock):
+        delta = A * IC.linear_density(
+            box, cosmo, seed=seed0 + m, f_NL=fnl, backend=backend
+        )
+        tracer = _redshift_tracer_linear(delta, box, b1, b2, fg * f_lin, los_axis)
+        parts = [
+            np.asarray(
+                F.band_power_multipole(
+                    tracer, box, k_bins, el, los_axis=los_axis, dk=dk
+                ),
+                dtype=np.float64,
+            )
+            for el in ells
+        ]
+        data[m, :] = np.concatenate(parts)
+
+    cov = np.cov(data, rowvar=False)
+    if hartlap:
+        h = (n_mock - n_data - 2) / (n_mock - 1)
+        cov = cov / h
+    return cov
