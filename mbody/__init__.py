@@ -13,6 +13,8 @@ See README.md for orientation and ROADMAP.md for the staged plan.
 from mbody import (
     bias,
     cosmology,
+    diagnostics,
+    driver,
     fields,
     forces,
     ic,
@@ -28,6 +30,7 @@ from mbody.config import (
     SimConfig,
     TimeStepping,
 )
+from mbody.driver import RunResult, run
 
 __version__ = "0.1.0"
 
@@ -41,9 +44,13 @@ __all__ = [
     "integrate",
     "ic",
     "bias",
+    "diagnostics",
+    "driver",
     "Cosmology",
     "BoxConfig",
     "TimeStepping",
     "InitialConditions",
     "SimConfig",
+    "run",
+    "RunResult",
 ]

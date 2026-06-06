@@ -78,6 +78,26 @@ scripts/    runnable experiments / demos
 tests/      unit + smoke tests
 ```
 
+## Diagnostics & the run driver
+
+- `mbody.run(SimConfig) -> RunResult` (`mbody/driver.py`) is the single entry
+  point: it threads the whole config through ic -> LPT -> leapfrog, and the
+  result measures + renders + serializes itself (`.power`, `.cross_with_ic`,
+  `.growth_history`, `.dashboard`, `.save`).
+- `mbody/diagnostics.py` holds the shared, off-AD-path estimators (P(k),
+  cross-correlation `r(k)`, growth history, skewness / one-point PDF) and the
+  memory-gated `SnapshotRecorder` (the `snapshot(step, a, x, p)` seam, stores
+  only bounded reductions). Reuse these -- do not re-implement diagnostics per
+  script.
+- `mbody/viz.py` is the optional matplotlib layer (`density_slice`,
+  `animate_slab`, six-panel `dashboard`). It is intentionally NOT imported by
+  `mbody.__init__`, so `import mbody` stays plotting-free / off the hot path --
+  import `mbody.viz` explicitly in scripts.
+- **Honest-config invariant:** SimConfig defaults name only implemented physics
+  (`integrator="exact"`, `lpt_order=1`); `fastpm` / `bullfrog` / `lpt_order=2`
+  are reserved enum values that `run()` rejects with `NotImplementedError`. When
+  adding an integrator or LPT order, implement it before flipping the default.
+
 ## Key references
 
 - Dalal et al. 2008 (arXiv:0710.4560) -- local-f_NL scale-dependent bias.

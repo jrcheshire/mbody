@@ -14,7 +14,8 @@ physics or autodiff path; a small optional `mbody` viz layer then turns a
 sequence of snapshots into slice/scatter frames and stitches them into an
 **animation of structure forming** from the initial conditions. Shared
 diagnostics (P(k), cross-correlation, later the bispectrum) are first-class and
-reused across steps. Keep all of this optional and off the hot/AD path.
+reused across steps. Keep all of this optional and off the hot/AD path. This is
+now built -- see Step 6 (`mbody.diagnostics` + `mbody.viz` + the run driver).
 
 ## Step 0 -- de-risk autodiff through the FFT  [done]
 
@@ -149,6 +150,35 @@ whose f_NL response enters via the squeezed bispectrum (Step 4 physics).
 - Amplitude: the 1/M(k) overlay is shape-only (normalized at the largest scale);
   a first-principles `b_phi` and the universality relation
   `b_phi = 2 delta_c (b1-1)` are Stretch (the variance-modulation tracer).
+
+## Step 6 -- diagnostics layer, viz, and the run driver  [done]
+
+The cross-cutting diagnostics/visualization plan above is built, and a single run
+driver ties the config to it.
+
+- `mbody/diagnostics.py`: read-only, off-AD-path measurement reused across the
+  scripts and the dashboard -- `cross_correlation` (the k-resolved coefficient
+  r(k)), `particle_power`, `growth_amplitude` / `linear_growth_reference`,
+  `skewness` / `one_point_pdf`, and the memory-gated `SnapshotRecorder` (the
+  `snapshot(step, a, x, p)` seam; stores only bounded reductions -- a slab
+  projection + low-k modes -- never the full particle state).
+- `mbody/viz.py`: the optional matplotlib layer, deliberately NOT imported by
+  `mbody.__init__` so `import mbody` stays plotting-free and off the hot path --
+  `density_slice`, `animate_slab`, and the six-panel `dashboard` (density slice;
+  P(k) vs linear at z_init/z_final; one-point PDF + skewness; growth vs D(a);
+  r(k) vs the IC; a config-summary text panel).
+- `mbody/driver.py`: `run(SimConfig) -> RunResult`, the single entry point that
+  threads a whole config through ic -> LPT -> leapfrog and measures it. RunResult
+  measures (`power`, `cross_with_ic`, `growth_history`) and renders / serializes
+  itself (`dashboard`, `save`). `scripts/run_demo.py` is the headline; the inline
+  growth / animation in `plot_growth.py` and `animate_pm.py` now comes from this
+  shared layer.
+- Honest config: SimConfig defaults were corrected to name only built physics --
+  `integrator="exact"` (the implemented exact-background leapfrog) and
+  `lpt_order=1` (Zel'dovich), so `SimConfig()` runs out of the box. The reserved
+  names (`fastpm` / `bullfrog`, `lpt_order=2`) stay in the enums, but `run()`
+  raises `NotImplementedError` on them rather than silently substituting. Flip a
+  default only when that physics is actually implemented.
 
 ## Stretch
 

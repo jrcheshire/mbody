@@ -2,14 +2,17 @@
 
 Two checks in one figure. Left: the measured power spectrum at the start
 (z = z_init) and end (z = 0) of the run, each against linear theory. On large
-scales both track linear P(k). The small scales are limited by the force-mesh
-resolution here -- CIC smoothing suppresses power near the Nyquist scale at both
-epochs -- so the nonlinear sharpening of the web is easier to see in the
-animation than in this coarse-mesh spectrum. Right: the large-scale growth of
-the density amplitude across the run, measured by cross-correlating each
-snapshot with the initial field, overlaid on the linear growth factor
-D(a)/D(a_init). They should lie on top of each other -- the headline check that
-the integrator reproduces linear growth where it must.
+scales both track linear P(k); small scales are limited by the force-mesh
+resolution (CIC smoothing suppresses power near Nyquist at both epochs), so the
+nonlinear sharpening of the web is easier to see in the animation than in this
+coarse-mesh spectrum. Right: the large-scale growth of the density amplitude
+across the run, overlaid on the linear growth factor D(a)/D(a_init). They should
+lie on top of each other -- the headline check that the integrator reproduces
+linear growth where it must.
+
+Both panels are built from mbody.diagnostics (particle_power, the
+SnapshotRecorder growth history, linear_growth_reference) -- the same estimators
+the dashboard and the tests use -- rather than re-deriving them here.
 
 Run: pixi run python scripts/plot_growth.py
 Saves: outputs/growth.png
@@ -21,15 +24,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
 
 from mbody.config import BoxConfig, Cosmology, TimeStepping  # noqa: E402
 from mbody import cosmology as C  # noqa: E402
-from mbody import fields as F  # noqa: E402
+from mbody import diagnostics as D  # noqa: E402
 from mbody import integrate as IG  # noqa: E402
-from mbody import painting as PA  # noqa: E402
-
-import mlx.core as mx  # noqa: E402
 
 
 def main():
@@ -38,35 +37,20 @@ def main():
     time = TimeStepping(z_init=9.0, z_final=0.0, n_steps=20)
     z_init = time.z_init
 
-    _, _, kmag = F.k_grid(box)
-    low_k = (kmag > 0) & (kmag < 0.05)  # deeply linear band for the growth check
-
-    history = []  # (a, low-k Fourier modes of the density)
-
-    def snapshot(step, a, x, p):
-        dk = np.asarray(mx.fft.rfftn(PA.density_contrast(x, box)))
-        history.append((a, dk[low_k].copy()))
-
+    # Growth only -- skip the slab projections this figure does not use.
+    rec = D.SnapshotRecorder(box, record_slab=False)
     x0, _ = IG.initial_state(box, cosmo, time, seed=0)
-    xf, _ = IG.leapfrog(box, cosmo, time, seed=0, snapshot=snapshot)
+    xf, _ = IG.leapfrog(box, cosmo, time, seed=0, snapshot=rec)
 
     # Left panel: P(k) at the two epochs vs linear theory.
-    ks_i, pk_i, _ = F.power_spectrum(PA.density_contrast(x0, box), box)
-    ks_f, pk_f, _ = F.power_spectrum(PA.density_contrast(xf, box), box)
+    ks_i, pk_i, _ = D.particle_power(x0, box)
+    ks_f, pk_f, _ = D.particle_power(xf, box)
     Plin_i = C.linear_power(ks_i, cosmo, z=z_init)
     Plin_f = C.linear_power(ks_f, cosmo, z=0.0)
 
-    # Right panel: large-scale growth = Re<dk(a) dk(a_i)*> / <|dk(a_i)|^2>.
-    dk0 = history[0][1]
-    a_arr = np.array([a for a, _ in history])
-    R = np.array(
-        [
-            np.real(np.sum(dk * np.conj(dk0)) / np.sum(np.abs(dk0) ** 2))
-            for _, dk in history
-        ]
-    )
-    D_lin = np.array([C.growth_factor(1.0 / a - 1.0, cosmo) for a in a_arr])
-    D_lin = D_lin / D_lin[0]  # normalize to the initial epoch
+    # Right panel: large-scale growth vs linear D(a)/D(a_init).
+    a_arr, R = rec.growth_history()
+    D_lin = D.linear_growth_reference(a_arr, cosmo)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 

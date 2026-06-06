@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from mbody.config import BoxConfig, Cosmology  # noqa: E402
+from mbody import diagnostics as D  # noqa: E402
 from mbody import fields as F  # noqa: E402
 from mbody import ic as IC  # noqa: E402
 
@@ -52,12 +53,6 @@ def antisym_measure(triangles, nseed, seed0=3000):
         bm, _ = F.bispectrum(dm, BOX, triangles)
         per[s] = 0.5 * (bp - bm)
     return per.mean(axis=0), per.std(axis=0, ddof=1) / np.sqrt(nseed)
-
-
-def skewness(arr):
-    d = np.asarray(arr, dtype=np.float64)
-    d = d - d.mean()
-    return float(np.mean(d**3) / np.mean(d**2) ** 1.5)
 
 
 def main():
@@ -93,7 +88,7 @@ def main():
     colors = {-F_NL: "C0", 0.0: "k", F_NL: "C3"}
     for f, d in fields.items():
         arr = np.asarray(d).ravel()
-        sk = skewness(arr)
+        sk = D.skewness(arr)
         ax1.hist(
             arr / arr.std(),
             bins=120,

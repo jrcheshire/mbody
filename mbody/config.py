@@ -151,9 +151,12 @@ class TimeStepping:
     n_steps : number of leapfrog PM steps between them. More steps = more
         accurate growth, but reverse-mode autodiff memory scales with this
         count because the graph unrolls over every step.
-    integrator : time-stepping scheme. "fastpm" uses modified kick/drift
-        kernels that get linear growth right at low step count; "bullfrog" is a
-        2LPT-accurate, time-reversible alternative.
+    integrator : time-stepping scheme. "exact" is the implemented baseline --
+        a kick-drift-kick leapfrog whose kick/drift coefficients are exact
+        background integrals. "fastpm" (modified kernels that get linear growth
+        right at low step count) and "bullfrog" (a 2LPT-accurate, time-reversible
+        alternative) are reserved in the enum but not yet implemented; run()
+        raises NotImplementedError on them.
     memory_mode : autodiff memory strategy. "replay" keeps the full unrolled
         graph; "checkpoint" recomputes each step in the backward pass to save
         memory; "adjoint" reconstructs state by reverse-time integration
@@ -163,10 +166,10 @@ class TimeStepping:
     z_init: float = 9.0
     z_final: float = 0.0
     n_steps: int = 10
-    integrator: str = "fastpm"
+    integrator: str = "exact"
     memory_mode: str = "replay"
 
-    _INTEGRATORS = ("fastpm", "bullfrog")
+    _INTEGRATORS = ("exact", "fastpm", "bullfrog")
     _MEMORY_MODES = ("replay", "checkpoint", "adjoint")
 
     def __post_init__(self):
@@ -200,15 +203,15 @@ class InitialConditions:
         differentiates with respect to.
     seed : RNG seed for the Gaussian random phases (reproducibility).
     lpt_order : Lagrangian perturbation theory order for the initial
-        displacement -- 1 (Zel'dovich) or 2 (2LPT, more accurate large-scale
-        flows).
+        displacement -- 1 (Zel'dovich, implemented) or 2 (2LPT, more accurate
+        large-scale flows; reserved but not yet implemented, run() raises on it).
     kind : "gaussian" or "local_fnl". (Redundant with f_NL != 0, but explicit
         so a run's intent is unambiguous.)
     """
 
     f_NL: float = 0.0
     seed: int = 0
-    lpt_order: int = 2
+    lpt_order: int = 1
     kind: str = "gaussian"
 
     _KINDS = ("gaussian", "local_fnl")
