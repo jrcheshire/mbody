@@ -528,18 +528,35 @@ def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None, integrator="exact"):
 
 
 def _reversible_ic_grad(
-    loss_field, ic_fn, theta, box, cosmo, time, spacing, compiled, integrator
+    loss_field,
+    ic_fn,
+    theta,
+    box,
+    cosmo,
+    time,
+    spacing,
+    compiled,
+    integrator,
+    loss_uses_momentum=False,
 ):
-    """Reversible-leapfrog adjoint: d loss_field(x_final) / d theta.
+    """Reversible-leapfrog adjoint: d loss_field(x_final[, p_final]) / d theta.
 
     `ic_fn(theta) -> [x0, p0]` builds the initial state from the IC parameter(s)
     theta. The four eager, O(grid)-memory stages are: build the IC, run the
     leapfrog forward keeping only the final state, seed the backward sweep with
-    the loss cotangent at x_final, then walk the leapfrog backward (reconstructing
-    each state by reverse-stepping) and push the initial-state cotangent through
-    ic_fn back to theta. Peak memory is independent of the step count. The
-    reverse sweep does not depend on theta, so a vector theta gets every gradient
-    from the single final IC vjp -- shared by adjoint_grad_fnl and adjoint_grad_ic.
+    the loss cotangent at the final state, then walk the leapfrog backward
+    (reconstructing each state by reverse-stepping) and push the initial-state
+    cotangent through ic_fn back to theta. Peak memory is independent of the step
+    count. The reverse sweep does not depend on theta, so a vector theta gets
+    every gradient from the single final IC vjp -- shared by adjoint_grad_fnl and
+    adjoint_grad_ic.
+
+    With loss_uses_momentum=True the loss is `loss_field(x_final, p_final)` (the
+    a-time momentum), needed for redshift-space summaries that depend on the final
+    velocities: the momentum cotangent is then seeded from the loss instead of
+    zero, so the f_NL / amplitude gradient correctly carries the velocity's
+    dependence on the initial conditions through the trajectory. (Both the KDK and
+    BullFrog reverse sweeps already propagate the momentum cotangent.)
     """
     if integrator is None:
         integrator = time.integrator
@@ -583,9 +600,20 @@ def _reversible_ic_grad(
         x, m = one_step(x, m, c)
         mx.eval(x, m)
 
-    # 3. cotangent of the loss at the final positions.
-    _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
-    gm = mx.zeros_like(m)
+    # 3. cotangent of the loss at the final state. For a positional loss the
+    # momentum cotangent is zero; for a momentum-dependent (redshift-space) loss
+    # seed it too, converting the trajectory momentum m to the a-time momentum p
+    # (m is p for KDK, the D-time velocity v = p/G_f for BullFrog, so p = m*G_f).
+    if loss_uses_momentum:
+        gf_final = _G_f(float(a_steps[-1]), cosmo) if integrator == "bullfrog" else 1.0
+
+        def loss_xm(xx, mm):
+            return loss_field(xx, mm * gf_final)
+
+        _, (gx, gm) = mx.vjp(loss_xm, [x, m], [mx.array(1.0)])
+    else:
+        _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
+        gm = mx.zeros_like(m)
     mx.eval(gx, gm)
 
     # 4. reverse adjoint sweep -- O(1) memory in the step count.
@@ -672,8 +700,9 @@ def adjoint_grad_ic(
     compiled=False,
     integrator=None,
     lpt_order=2,
+    loss_uses_momentum=False,
 ):
-    """Gradient of loss_field(x_final) w.r.t. the IC parameters (f_NL, amplitude).
+    """Gradient of loss_field(x_final[, p_final]) w.r.t. the IC params (f_NL, A).
 
     The multi-parameter generalization of adjoint_grad_fnl. Both parameters are
     IC-stage -- they shape the initial conditions the leapfrog then evolves -- so
@@ -682,6 +711,11 @@ def adjoint_grad_ic(
     The cost is therefore the same one sweep as adjoint_grad_fnl, NOT 2x (the
     trajectory reverse-stepping is independent of how many IC parameters there
     are; only the final, cheap IC vjp sees both).
+
+    With loss_uses_momentum=True the loss is `loss_field(x_final, p_final)` (the
+    final a-time momenta), for a redshift-space summary whose value depends on the
+    peculiar velocities -- the velocity's dependence on f_NL / A then flows through
+    the trajectory too (see _reversible_ic_grad).
 
     Returns a length-2 mx.array [d loss / d f_NL, d loss / d amplitude]. For a
     vector statistic (a P(k) over bins) call once per component. The memory and
@@ -704,5 +738,14 @@ def adjoint_grad_ic(
         return [x0, p0]
 
     return _reversible_ic_grad(
-        loss_field, ic_fn, theta, box, cosmo, time, spacing, compiled, integrator
+        loss_field,
+        ic_fn,
+        theta,
+        box,
+        cosmo,
+        time,
+        spacing,
+        compiled,
+        integrator,
+        loss_uses_momentum=loss_uses_momentum,
     )
