@@ -1,8 +1,12 @@
 """Step 5 headline, PM stage: dlnP/df_NL through the full differentiable forward
-model.
+model -- now with the FastPM integrator + 2LPT initial conditions (the SimConfig
+defaults, picked up automatically by TimeStepping() / leapfrog()).
 
-The pipeline f_NL -> ic.linear_density -> LPT -> PM leapfrog -> CIC -> local-bias
-tracer -> band power is differentiable end to end. This figure shows:
+The pipeline f_NL -> ic.linear_density -> 2LPT -> FastPM leapfrog -> CIC ->
+local-bias tracer -> band power is differentiable end to end. With 2LPT, f_NL
+also enters the (quadratic) second-order displacement, so dlnP/df_NL now picks up
+that IC contribution too -- mx.grad handles it, and the matched-phase finite
+difference confirms it. This figure shows:
 
 Left: dlnP/df_NL of the PM-evolved tracer from reverse-mode mx.grad (points,
 seed scatter) overlaid on the matched-phase finite difference (open markers) --
@@ -90,6 +94,15 @@ def main():
     gp0 = g_pm0.mean(0)
     gl = g_lin.mean(0)
 
+    # validation: autodiff vs matched-phase FD, and signal vs the matter null.
+    print(
+        "  grad vs matched-phase FD: median |grad/FD - 1| = %.2e"
+        % np.median(np.abs(gp / fp - 1.0))
+    )
+    print(
+        "  large-scale signal / matter null = %.1fx" % (np.abs(gp[0]) / np.abs(gp0[0]))
+    )
+
     ref = B.scale_dependent_shape(kb, COSMO)
     ref = ref * (gl[0] / ref[0])  # normalize 1/M(k) to the linear tracer
 
@@ -120,7 +133,7 @@ def main():
     fig.colorbar(im, ax=ax1, fraction=0.046, label="log10(1 + delta - min)")
 
     fig.suptitle(
-        f"M-body Step 5 (PM): autodiff dlnP/df_NL end to end  "
+        f"M-body Step 5 (PM): autodiff dlnP/df_NL end to end, FastPM + 2LPT  "
         f"(L={BOX.box_size:.0f}, N={BOX.n_mesh}, {TIME.n_steps} steps, {NSEED} seeds)"
     )
     fig.tight_layout()
