@@ -154,9 +154,10 @@ class TimeStepping:
     integrator : time-stepping scheme. "fastpm" (default) uses growth-corrected
         kick/drift kernels that get linear growth right at any step count;
         "exact" is the exact-background-integral KDK leapfrog (a ~2% growth
-        deficit at low step count). Both are implemented. "bullfrog" (a
-        2LPT-accurate, time-reversible alternative) is reserved in the enum but
-        not yet implemented; run() raises NotImplementedError on it.
+        deficit at low step count); "bullfrog" is a 2LPT-accurate, time-reversible
+        drift-kick-drift integrator (Rampf, List & Hahn 2024) whose single step is
+        second-order accurate, so it needs fewer steps for the same accuracy. All
+        three are implemented; fastpm stays the default.
     memory_mode : autodiff memory strategy. "replay" keeps the full unrolled
         graph; "checkpoint" recomputes each step in the backward pass to save
         memory; "adjoint" reconstructs state by reverse-time integration

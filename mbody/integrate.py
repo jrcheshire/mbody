@@ -145,6 +145,94 @@ def fastpm_kick_factor(a0, a1, a_r, cosmo):
     return 1.5 * cosmo.Omega_m * num / den
 
 
+# --- BullFrog: 2LPT-accurate drift-kick-drift (Rampf, List & Hahn 2024) --------
+#
+# BullFrog (arXiv:2409.19049, JCAP 2025) is a leapfrog-family integrator whose
+# single step is *2LPT-accurate* -- where FastPM's step is only 1LPT/Zel'dovich-
+# accurate -- so it converges to the exact solution with far fewer steps. It steps
+# in growth-factor time D with velocity v = dx/dD, as a drift-kick-drift with an
+# AFFINE kick (the alpha != 1 velocity rescale is what absorbs the 2LPT growth):
+#
+#     x_mid = x + (dD/2) v
+#     v'    = alpha v + (beta / D_mid) g(x_mid)
+#     x'    = x_mid + (dD/2) v'
+#
+# with dD = D(a1) - D(a0), D_mid = D(a0) + dD/2, and g mbody's geometric force
+# (= the paper's acceleration A, div A = -delta; for a linear mode g = +D Psi1, so
+# it enters the kick with no extra sign). The weights are (paper Eqs 2.3-2.4)
+#
+#     F_mid = (E0 + E0' dD/2) / D_mid - D_mid
+#     alpha = (E1' - F_mid) / (E0' - F_mid),    beta = 1 - alpha,
+#
+# with E the second-order growth and E' = dE/dD. We use the EdS relation
+# E = -(3/7) D^2, E' = -(6/7) D (consistent with the EdS 2LPT IC, cosmology.
+# growth_factor_2) evaluated on the EXACT LCDM growth D = cosmology.growth_factor.
+# With D propto a this reproduces the paper's published EdS closed form
+# alpha = [4n(4n+1)-5]/[4n(4n+7)+7], beta = [24n+12]/[4n(4n+7)+7], n = D0/dD
+# (verified algebraically; pinned by test_bullfrog_weights_match_eds_closed_form).
+#
+# alpha, beta, dD, D_mid are background-only float64 constants of the step, so --
+# like FastPM -- mx.grad and the reversible adjoint are unaffected by them; the
+# affine step is exactly invertible (alpha != 0), so it is time-reversible. mbody's
+# a-time momentum p maps to BullFrog's D-time velocity by v = p / G_f(a) (G_f =
+# a^3 E D', _G_f), so the BullFrog path runs on (x, v) internally and converts
+# p <-> v at the IC and the output only.
+
+
+def _bullfrog_weights(D0, D1):
+    """BullFrog (alpha, beta, dD, D_mid) for a step with linear growth D0 -> D1.
+
+    EdS second-order growth E = -(3/7)D^2, E' = -(6/7)D; F_mid and the weights are
+    paper Eqs 2.4 and 2.3. Pure function of the two growth values, so it is tested
+    directly against the published EdS closed form (D propto a) without a cosmology.
+    """
+    dD = D1 - D0
+    D_mid = D0 + 0.5 * dD
+    E0 = -(3.0 / 7.0) * D0 * D0
+    E0p = -(6.0 / 7.0) * D0
+    E1p = -(6.0 / 7.0) * D1
+    F_mid = (E0 + E0p * 0.5 * dD) / D_mid - D_mid
+    alpha = (E1p - F_mid) / (E0p - F_mid)
+    return alpha, 1.0 - alpha, dD, D_mid
+
+
+def bullfrog_coeffs(a_steps, cosmo):
+    """Per-step BullFrog (dD/2, alpha, beta/D_mid) coefficients over the a-grid.
+
+    Background-only float64 constants of the step (so off the AD graph, like the
+    FastPM kernels). The drift coefficient is dD/2 (half the growth change), and the
+    affine kick is v -> alpha v + (beta/D_mid) g. Returns a list of
+    (dD_half, alpha, beta_over_Dmid), one per sub-interval.
+    """
+    co = []
+    for i in range(len(a_steps) - 1):
+        D0 = C.growth_factor(1.0 / float(a_steps[i]) - 1.0, cosmo)
+        D1 = C.growth_factor(1.0 / float(a_steps[i + 1]) - 1.0, cosmo)
+        alpha, beta, dD, D_mid = _bullfrog_weights(D0, D1)
+        co.append((0.5 * dD, alpha, beta / D_mid))
+    return co
+
+
+def _bullfrog_forward(x, v, coeff, force_fn, box_size):
+    """One BullFrog drift-kick-drift step on (x, v) in D-time. Differentiable."""
+    dD_half, alpha, bcoef = coeff
+    x = _wrap(x + dD_half * v, box_size)
+    g = force_fn(x)  # geometric force at the half-drifted (midpoint) position
+    v = alpha * v + bcoef * g
+    x = _wrap(x + dD_half * v, box_size)
+    return x, v
+
+
+def _bullfrog_reverse(x, v, coeff, force_fn, box_size):
+    """Exact inverse of _bullfrog_forward (reconstructs the previous (x, v))."""
+    dD_half, alpha, bcoef = coeff
+    x = _wrap(x - dD_half * v, box_size)  # undo the 2nd half-drift -> midpoint
+    g = force_fn(x)  # same midpoint position -> same force as the forward step
+    v = (v - bcoef * g) / alpha  # invert the affine kick (alpha != 0)
+    x = _wrap(x - dD_half * v, box_size)  # undo the 1st half-drift -> previous x
+    return x, v
+
+
 def a_grid(time, spacing="linear"):
     """Step boundaries in scale factor a, from z_init to z_final.
 
@@ -244,6 +332,8 @@ def evolve_state(
     """
     if force_fn is None:
         force_fn = FO.make_force_fn(box)
+    if integrator == "bullfrog":
+        return _evolve_bullfrog(x, p, box, cosmo, a_steps, snapshot, force_fn)
     g = force_fn(x)  # geometric acceleration at the start
     if snapshot is not None:
         snapshot(0, float(a_steps[0]), x, p)
@@ -256,6 +346,25 @@ def evolve_state(
         if snapshot is not None:
             snapshot(i + 1, float(a_steps[i + 1]), x, p)
     return x, p
+
+
+def _evolve_bullfrog(x, p, box, cosmo, a_steps, snapshot, force_fn):
+    """BullFrog (drift-kick-drift) forward pass; differentiable like evolve_state.
+
+    Runs on the D-time velocity v = p / G_f(a), converting the mbody a-time momentum
+    in at the start and back out at the end (and for each snapshot). One force solve
+    per step (at the midpoint); there is no half-kick to share across steps.
+    """
+    a_i = float(a_steps[0])
+    v = p / _G_f(a_i, cosmo)  # a-time momentum -> D-time velocity
+    if snapshot is not None:
+        snapshot(0, a_i, x, p)
+    for i, coeff in enumerate(bullfrog_coeffs(a_steps, cosmo)):
+        x, v = _bullfrog_forward(x, v, coeff, force_fn, box.box_size)
+        if snapshot is not None:
+            a1 = float(a_steps[i + 1])
+            snapshot(i + 1, a1, x, v * _G_f(a1, cosmo))
+    return x, v * _G_f(float(a_steps[-1]), cosmo)
 
 
 def leapfrog(
@@ -403,6 +512,14 @@ def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None, integrator="exact"):
     """
     if force_fn is None:
         force_fn = FO.make_force_fn(box)
+    if integrator == "bullfrog":
+        a_i = float(a_steps[0])
+        v = p / _G_f(a_i, cosmo)
+        mx.eval(x, v)
+        for coeff in bullfrog_coeffs(a_steps, cosmo):
+            x, v = _bullfrog_forward(x, v, coeff, force_fn, box.box_size)
+            mx.eval(x, v)
+        return x, v * _G_f(float(a_steps[-1]), cosmo)
     one_step, _ = _make_steppers(box, force_fn)
     for k1, dr, k2 in _step_coeffs(a_steps, cosmo, integrator):
         x, p = one_step(x, p, k1, dr, k2)
@@ -427,35 +544,61 @@ def _reversible_ic_grad(
     if integrator is None:
         integrator = time.integrator
     a_steps = a_grid(time, spacing)
-    co = _step_coeffs(a_steps, cosmo, integrator)
     force_fn = FO.make_force_fn(box, compiled=compiled)
-    one_step, reverse_step = _make_steppers(box, force_fn)
+
+    # Per-integrator steppers and the IC->state map. For BullFrog the trajectory
+    # state is (x, v) in D-time, so ic_mom converts the IC momentum p0 -> v0 =
+    # p0/G_f(a_i) (a differentiable scalar, handled by the final IC vjp); for KDK
+    # the state is (x, p) and ic_mom is the IC unchanged. one_step/reverse_step take
+    # (x, mom, coeff) so the sweep below is integrator-agnostic.
+    if integrator == "bullfrog":
+        co = bullfrog_coeffs(a_steps, cosmo)
+        gf_i = _G_f(float(a_steps[0]), cosmo)
+
+        def ic_mom(th):
+            x0, p0 = ic_fn(th)
+            return [x0, p0 / gf_i]
+
+        def one_step(x, m, c):
+            return _bullfrog_forward(x, m, c, force_fn, box.box_size)
+
+        def reverse_step(x, m, c):
+            return _bullfrog_reverse(x, m, c, force_fn, box.box_size)
+
+    else:
+        co = _step_coeffs(a_steps, cosmo, integrator)
+        ic_mom = ic_fn
+        kdk_one, kdk_rev = _make_steppers(box, force_fn)
+
+        def one_step(x, m, c):
+            return kdk_one(x, m, *c)
+
+        def reverse_step(x, m, c):
+            return kdk_rev(x, m, *c)
 
     # 1-2. IC, then eager forward keeping only the final state.
-    x, p = ic_fn(theta)
-    mx.eval(x, p)
-    for k1, dr, k2 in co:
-        x, p = one_step(x, p, k1, dr, k2)
-        mx.eval(x, p)
+    x, m = ic_mom(theta)
+    mx.eval(x, m)
+    for c in co:
+        x, m = one_step(x, m, c)
+        mx.eval(x, m)
 
     # 3. cotangent of the loss at the final positions.
     _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
-    gp = mx.zeros_like(p)
-    mx.eval(gx, gp)
+    gm = mx.zeros_like(m)
+    mx.eval(gx, gm)
 
     # 4. reverse adjoint sweep -- O(1) memory in the step count.
-    for k1, dr, k2 in reversed(co):
-        x_prev, p_prev = reverse_step(x, p, k1, dr, k2)
-        _, (gx, gp) = mx.vjp(
-            lambda a, b, k1=k1, dr=dr, k2=k2: one_step(a, b, k1, dr, k2),
-            [x_prev, p_prev],
-            [gx, gp],
+    for c in reversed(co):
+        x_prev, m_prev = reverse_step(x, m, c)
+        _, (gx, gm) = mx.vjp(
+            lambda a, b, c=c: one_step(a, b, c), [x_prev, m_prev], [gx, gm]
         )
-        x, p = x_prev, p_prev
-        mx.eval(x, p, gx, gp)
+        x, m = x_prev, m_prev
+        mx.eval(x, m, gx, gm)
 
-    # 5. push the (x0, p0) cotangent through the IC back to the parameters.
-    _, (gtheta,) = mx.vjp(ic_fn, [theta], [gx, gp])
+    # 5. push the (x0, mom0) cotangent through the IC map back to the parameters.
+    _, (gtheta,) = mx.vjp(ic_mom, [theta], [gx, gm])
     return gtheta
 
 

@@ -428,3 +428,109 @@ def test_fastpm_adjoint_matches_replay():
     )
     assert abs(g_replay) > 0.0
     assert abs(g_adjoint - g_replay) / abs(g_replay) < 1e-3
+
+
+# --- BullFrog integrator: 2LPT-accurate drift-kick-drift -----------------------
+# A leapfrog-family integrator (Rampf, List & Hahn 2024) whose single step is
+# 2LPT-accurate. The coefficients (background-only constants of the step) are
+# pinned against the paper's published EdS closed form; correctness is checked by
+# convergence to the same field as FastPM, exact reversibility, and the adjoint
+# matching replay. The 2LPT-per-step *advantage* (fewer steps for the same
+# accuracy) is resolution-gated and demonstrated in scripts/probe_bullfrog.py.
+
+
+def _grow_linear_mode_bullfrog(n_steps, z_init=9.0):
+    # The BullFrog analogue of _grow_linear_mode: a single linear mode has
+    # geometric force g = D Psi1 = x (with Psi1 = 1, so x = D and v = dx/dD = 1).
+    a = IG.a_grid(TimeStepping(z_init=z_init, z_final=0.0, n_steps=n_steps))
+    Di = C.growth_factor(z_init, COSMO)
+    x, v = Di, 1.0
+    for dD_half, alpha, bcoef in IG.bullfrog_coeffs(a, COSMO):
+        x = x + dD_half * v
+        v = alpha * v + bcoef * x  # g = x
+        x = x + dD_half * v
+    return x
+
+
+def test_bullfrog_weights_match_eds_closed_form():
+    # The EdS-E weights on D propto a must equal the paper's published closed form
+    # alpha = [4n(4n+1)-5]/[4n(4n+7)+7], beta = [24n+12]/[...], n = D0/dD (Eq 2.3).
+    for D0, dD in ((0.1, 0.05), (0.5, 0.2), (1.0, 0.3), (0.3, 0.9)):
+        alpha, beta, _, _ = IG._bullfrog_weights(D0, D0 + dD)
+        n = D0 / dD
+        denom = 4 * n * (4 * n + 7) + 7
+        assert abs(alpha - (4 * n * (4 * n + 1) - 5) / denom) < 1e-12
+        assert abs(beta - (24 * n + 12) / denom) < 1e-12
+
+
+def test_bullfrog_linear_mode_exact_growth():
+    # An isolated linear mode has no 2LPT self-coupling, so BullFrog (like FastPM)
+    # grows it as D(a) exactly at any step count -- a single step suffices.
+    Di = C.growth_factor(9.0, COSMO)
+    target = C.growth_factor(0.0, COSMO) / Di
+    for n in (1, 2, 4, 8):
+        assert abs(_grow_linear_mode_bullfrog(n) / Di / target - 1.0) < 1e-4
+
+
+def test_bullfrog_converges_to_fastpm_limit():
+    # Correctness (resolution-independent): with enough steps BullFrog reaches the
+    # SAME final field as FastPM (both -> the exact solution), up to the float32
+    # CIC scatter-add floor.
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=12)
+    xb, _ = IG.leapfrog(SMALL, COSMO, t, seed=0, backend="eh98", integrator="bullfrog")
+    xf, _ = IG.leapfrog(SMALL, COSMO, t, seed=0, backend="eh98", integrator="fastpm")
+    mx.eval(xb, xf)
+    L = SMALL.box_size
+    d = (np.asarray(xb, np.float64) - np.asarray(xf, np.float64) + L / 2) % L - L / 2
+    assert np.sqrt(np.mean(d**2)) < 0.05 * SMALL.cell_size
+
+
+def test_bullfrog_reversible():
+    # The affine drift-kick-drift step is exactly invertible: forward then reverse
+    # reconstructs x0 to the float32 floor (no 1/alpha amplification; ~1e-6 cells).
+    box = BoxConfig(box_size=256.0, n_mesh=16, n_particles=16)
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=8, integrator="bullfrog")
+    x0, p0 = IG.initial_state(box, COSMO, t, seed=0, backend="eh98")
+    ag = IG.a_grid(t)
+    ff = FO.make_force_fn(box)
+    v = p0 / IG._G_f(float(ag[0]), COSMO)
+    x = x0
+    co = IG.bullfrog_coeffs(ag, COSMO)
+    for c in co:
+        x, v = IG._bullfrog_forward(x, v, c, ff, box.box_size)
+        mx.eval(x, v)
+    for c in reversed(co):
+        x, v = IG._bullfrog_reverse(x, v, c, ff, box.box_size)
+        mx.eval(x, v)
+    L = box.box_size
+    d = (np.asarray(x, np.float64) - np.asarray(x0, np.float64) + L / 2) % L - L / 2
+    assert np.sqrt(np.mean(d**2)) < 1e-3 * box.cell_size
+
+
+def test_bullfrog_adjoint_matches_replay():
+    # BullFrog coefficients are constants of the step and the DKD map is reversible,
+    # so the reversible adjoint matches the replay mx.grad under integrator=
+    # "bullfrog" (to the reversibility floor), exactly as for FastPM.
+    box, t, _, loss_field = _adjoint_setup()
+
+    def replay_loss(f):
+        x, _ = IG.leapfrog(
+            box, COSMO, t, seed=0, f_NL=f, backend="eh98", integrator="bullfrog"
+        )
+        return loss_field(x)
+
+    g_replay = float(mx.grad(replay_loss)(mx.array(50.0)))
+    g_adjoint = float(
+        IG.adjoint_grad_fnl(
+            loss_field,
+            box,
+            COSMO,
+            t,
+            seed=0,
+            f_NL=50.0,
+            backend="eh98",
+            integrator="bullfrog",
+        )
+    )
+    assert abs(g_replay) > 0.0
+    assert abs(g_adjoint - g_replay) / abs(g_replay) < 1e-3

@@ -181,9 +181,28 @@ driver ties the config to it.
 - Honest config: SimConfig defaults name only built physics. With FastPM + 2LPT
   now implemented (Steps 2/3), the defaults are `integrator="fastpm"` and
   `lpt_order=2` (the better physics, validated); `"exact"` and `lpt_order=1`
-  remain available, and `"bullfrog"` is the one reserved name `run()` still
-  rejects with `NotImplementedError`. `scripts/compare_integrators.py` shows the
-  payoff (exact-vs-fastpm growth accuracy, ZA-vs-2LPT skewness).
+  remain available. `"bullfrog"` is now also implemented (see below), so all three
+  integrator enum values run. `scripts/compare_integrators.py` shows the
+  exact-vs-fastpm growth accuracy and ZA-vs-2LPT skewness.
+
+## BullFrog integrator  [done]
+
+`integrator="bullfrog"` (Rampf, List & Hahn 2024, arXiv:2409.19049) -- a
+2LPT-accurate drift-kick-drift integrator. It steps in growth-factor (D) time with
+an affine kick `v -> alpha v + (beta/D_mid) g(x_mid)`; the weights are
+background-only constants of the step (EdS second-order growth `E = -(3/7)D^2` on
+the exact LCDM `D`), pinned against the paper's published EdS closed form to 1e-16.
+The affine step is exactly invertible, so it reuses mbody's reversible adjoint
+(`adjoint_grad_ic`/`_fnl` match replay `mx.grad` to ~3e-7). mbody's a-time momentum
+maps to D-time velocity by `v = p/G_f(a)`. Validated: weights vs closed form, a
+single linear mode grows as `D(a)` exactly at any step count, convergence to the
+same field as FastPM, exact reversibility, adjoint==replay. **Finding:** BullFrog's
+fewer-steps advantage over FastPM is realized only when the force is resolved
+enough to carry the second-order mode coupling -- clear at `n_mesh=64`
+(~3x fewer steps for the same large-scale `r(k)`), absent at `n_mesh=32` (coarse
+CIC force), though it always converges correctly and beats the exact-background
+leapfrog. fastpm stays the default. `scripts/probe_bullfrog.py` (`pixi run
+bullfrog`), `docs/bullfrog.md`.
 
 ## Stretch
 

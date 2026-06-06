@@ -30,13 +30,17 @@ from mbody.diagnostics import SnapshotRecorder, cross_correlation, particle_powe
 
 
 def _check_supported(cfg):
-    """Reject SimConfig options that are reserved in the enums but not built."""
-    if cfg.time.integrator not in ("exact", "fastpm"):
+    """Reject SimConfig options that are reserved in the enums but not built.
+
+    All three integrators -- 'exact' (exact-background leapfrog), 'fastpm'
+    (growth-corrected KDK), and 'bullfrog' (2LPT-accurate drift-kick-drift) -- are
+    implemented; this guard remains so any future reserved enum value fails loudly
+    rather than silently running something else.
+    """
+    if cfg.time.integrator not in ("exact", "fastpm", "bullfrog"):
         raise NotImplementedError(
             f"integrator={cfg.time.integrator!r} is reserved in the config but "
-            "not implemented; only 'exact' (exact-background leapfrog) and "
-            "'fastpm' (growth-corrected kernels) run. BullFrog is a roadmap "
-            "Stretch item."
+            "not implemented; choose 'exact', 'fastpm', or 'bullfrog'."
         )
 
 

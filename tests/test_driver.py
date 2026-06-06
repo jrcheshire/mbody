@@ -67,10 +67,21 @@ def test_run_matches_loose_leapfrog():
     assert np.allclose(np.asarray(res.final_field), np.asarray(fld), atol=1e-4)
 
 
-def test_run_rejects_unimplemented_integrator():
-    cfg = SimConfig(time=TimeStepping(integrator="bullfrog"))
-    with pytest.raises(NotImplementedError):
-        mbody.run(cfg, backend="eh98")
+def test_run_supports_bullfrog():
+    # integrator="bullfrog" is now implemented: the driver runs it and, at low step
+    # count, the 2LPT-accurate drift-kick-drift evolves differently from FastPM.
+    box = BoxConfig(box_size=256.0, n_mesh=32, n_particles=32)
+    t_args = dict(z_init=9.0, z_final=0.0, n_steps=3)
+    fast = mbody.run(
+        SimConfig(box=box, time=TimeStepping(integrator="fastpm", **t_args)),
+        backend="eh98",
+    )
+    bull = mbody.run(
+        SimConfig(box=box, time=TimeStepping(integrator="bullfrog", **t_args)),
+        backend="eh98",
+    )
+    assert np.all(np.isfinite(np.asarray(bull.x)))
+    assert not np.allclose(np.asarray(fast.x), np.asarray(bull.x))
 
 
 def test_run_supports_fastpm():

@@ -96,9 +96,12 @@ tests/      unit + smoke tests
 - **Honest-config invariant:** SimConfig defaults name only implemented physics.
   Currently `integrator="fastpm"` (growth-corrected kick/drift, exact linear
   growth at any step count) and `lpt_order=2` (2LPT); `"exact"` and `lpt_order=1`
-  are the simpler implemented alternatives. `"bullfrog"` is the one reserved enum
-  value `run()` still rejects with `NotImplementedError`. When adding an
-  integrator or LPT order, implement + validate it before making it the default.
+  are the simpler implemented alternatives. `"bullfrog"` (2LPT-accurate
+  drift-kick-drift, Rampf+24) is now ALSO implemented and selectable -- all three
+  integrator enum values run; `_check_supported` stays as a guard for any future
+  reserved value. fastpm remains the default (bullfrog's per-step advantage is
+  resolution-gated; see docs/bullfrog.md). When adding an integrator or LPT order,
+  implement + validate it before making it the default.
   The loose API agrees: `integrate.initial_state` / `leapfrog` / `adjoint_grad_fnl`
   default `lpt_order=2`, and `leapfrog` resolves `integrator` from `time.integrator`
   (default fastpm) -- so the loose and config paths give the same physics. Pass
