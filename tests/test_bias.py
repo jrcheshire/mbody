@@ -135,6 +135,33 @@ def test_scale_dependent_shape_is_inverse_M():
     assert np.all(np.diff(shape) < 0)  # falls with k
 
 
+def test_mesh_variance_matches_realized_field():
+    # The ensemble mesh variance equals the realized linear field's <delta^2> up to
+    # cosmic variance (measured agreement ~0.2% averaged over seeds).
+    s2 = B.mesh_variance(BOX, COSMO)
+    realized = np.mean(
+        [float(mx.mean(IC.linear_density(BOX, COSMO, seed=s) ** 2)) for s in range(6)]
+    )
+    assert abs(realized / s2 - 1.0) < 0.03
+
+
+def test_scale_dependent_bias_amplitude_absolute():
+    # The ABSOLUTE amplitude check (no free normalization): the seed-averaged
+    # autodiff dlnP/df_NL matches the first-principles bin-averaged prediction
+    # 4 b2 sigma^2/(b1 M(q)) at low k. The bin-AVERAGED predictor removes the
+    # binning systematic that biases the bin-centre form low (centre gives ~0.73 at
+    # the fundamental, the shell average ~0.99); measured first-2-bin ratio ~1.02.
+    kb = _kb()
+    dlnp = _seed_mean_dlnp(B2)
+    pred_binned = B.scale_dependent_bias_response_binned(BOX, COSMO, kb, B1, B2)
+    pred_centre = B.scale_dependent_bias_response(kb, BOX, COSMO, B1, B2)
+    # First two (squeezed) bins match the absolute prediction to a few percent.
+    assert np.all(np.abs(dlnp[:2] / pred_binned[:2] - 1.0) < 0.08)
+    # The bin-averaged predictor is the right one: it beats the bin-centre form at
+    # the steep fundamental bin.
+    assert abs(dlnp[0] / pred_binned[0] - 1.0) < abs(dlnp[0] / pred_centre[0] - 1.0)
+
+
 # --- Stage 5b: dlnP/df_NL through the full differentiable PM pipeline ---
 
 

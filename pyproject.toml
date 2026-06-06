@@ -40,6 +40,7 @@ black = "*"
 flake8 = "*"
 flake8-bugbear = "*"
 camb = ">=1.6.5,<2"
+pyccl = ">=3.3.4,<4"
 
 [tool.pixi.pypi-dependencies]
 mbody = { path = ".", editable = true }
@@ -52,3 +53,5 @@ check-format = "black --check --skip-string-normalization mbody scripts tests"
 lint = "flake8 mbody scripts tests"
 probe = "python scripts/probe_ad_fft.py"
 fisher = "python scripts/plot_fisher.py"
+convergence = "python scripts/plot_convergence.py"
+external-ccl = "python scripts/probe_external_ccl.py"

@@ -3,9 +3,11 @@ scale-dependent bias.
 
 Left: dlnP/df_NL of a local-bias tracer of the linear f_NL field, from
 reverse-mode mx.grad (points, with seed scatter), overlaid on the matched-phase
-finite difference (open markers, the ground truth) and the 1/M(k) ~ 1/k^2 Dalal
-reference shape (curve). The matter field's response (b2 = 0) sits at ~0 -- the
-null that says the scale-dependent bias is a *tracer* effect.
+finite difference (open markers, the ground truth) and the ABSOLUTE first-
+principles prediction 4 b2 sigma^2/(b1 M(k)) (bin-averaged, solid curve -- NO free
+normalization). The faint dashed curve is the same 1/M(k) shape normalized at the
+largest scale, the older shape-only overlay. The matter field's response (b2 = 0)
+sits at ~0 -- the null that says the scale-dependent bias is a *tracer* effect.
 
 Right: the same physics as a power split -- the tracer auto-power P_h(k) at
 f_NL = -F, 0, +F (seed-averaged); local f_NL pushes large-scale power apart as
@@ -75,8 +77,9 @@ def main():
     gm = grad_m.mean(0)
     ft = fd_t.mean(0)
 
-    ref = B.scale_dependent_shape(kb, COSMO)
-    ref = ref * (gt[0] / ref[0])  # normalize 1/M(k) at the largest scale
+    pred_abs = B.scale_dependent_bias_response_binned(BOX, COSMO, kb, B1, B2)
+    ref_shape = B.scale_dependent_shape(kb, COSMO)
+    ref_shape = ref_shape * (gt[0] / ref_shape[0])  # shape-only (largest-scale norm)
 
     # Right panel: the power split.
     pk = {f: np.zeros(len(kb)) for f in (-F_SPLIT, 0.0, F_SPLIT)}
@@ -88,7 +91,8 @@ def main():
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12, 4.8))
 
-    ax0.plot(kb, ref, "-", color="0.6", label="1/M(k) ~ 1/k^2 (Dalal)")
+    ax0.plot(kb, pred_abs, "-", color="0.3", label="absolute: 4 b2 sigma^2/(b1 M(k))")
+    ax0.plot(kb, ref_shape, "--", color="0.7", label="1/M(k) shape (normalized)")
     ax0.errorbar(kb, gt, yerr=gt_e, fmt="o", color="C3", label="tracer: mx.grad")
     ax0.plot(kb, ft, "x", color="C0", mew=2, label="tracer: finite diff")
     ax0.plot(
@@ -98,7 +102,7 @@ def main():
     ax0.set_yscale("log")
     ax0.set_xlabel("k  [h/Mpc]")
     ax0.set_ylabel("dlnP/df_NL")
-    ax0.set_title("autodiff dlnP/df_NL vs Dalal scale-dependent bias")
+    ax0.set_title("autodiff dlnP/df_NL vs absolute scale-dependent bias")
     ax0.legend(fontsize=8)
 
     for f, c in ((-F_SPLIT, "C0"), (0.0, "k"), (F_SPLIT, "C3")):

@@ -52,6 +52,25 @@ def k_grid(box):
     return k_1d, kz_1d, k_mag
 
 
+def cic_window(box):
+    """CIC mass-assignment window W(k) on the rfftn half-grid (float64).
+
+    Painting particles with cloud-in-cell convolves the density with a triangular
+    cloud, multiplying each Fourier mode by W(k) = prod_i sinc^2(k_i / (2 k_nyq))
+    (the order-1 / CIC assignment window; sinc(x) = sin(pi x)/(pi x) = np.sinc).
+    A particle-painted power spectrum is therefore suppressed by W(k)^2 relative to
+    the true field -- negligible at low k, ~50% near k_nyq. Divide a measured
+    particle power by W^2 to deconvolve it (power_spectrum's deconvolve_cic flag);
+    a grid field (e.g. ic.linear_density) carries no such window. Returned shape
+    matches k_grid's k_mag, (N, N, N//2 + 1).
+    """
+    k_1d, kz_1d, _ = k_grid(box)
+    knyq = box.k_nyquist
+    wx = np.sinc(k_1d / (2.0 * knyq)) ** 2
+    wz = np.sinc(kz_1d / (2.0 * knyq)) ** 2
+    return wx[:, None, None] * wx[None, :, None] * wz[None, None, :]
+
+
 def gaussian_random_field(box, cosmo, seed=0, z=0.0, backend="camb"):
     """Generate a Gaussian density-contrast field delta(x) with power P(k).
 
@@ -75,12 +94,15 @@ def gaussian_random_field(box, cosmo, seed=0, z=0.0, backend="camb"):
     return P.as_real(delta)
 
 
-def power_spectrum(delta, box, dk=None, kmin=None, kmax=None):
+def power_spectrum(delta, box, dk=None, kmin=None, kmax=None, deconvolve_cic=False):
     """Estimate the power spectrum P(k) of a real field delta(x).
 
     Bins |delta_k|^2 in spherical |k| shells with the estimator normalization
     P(k) = (V / N^6) |delta_k|^2, where V = L^3. Returns (k_centers, P_k,
-    n_modes) as float64 numpy arrays, excluding the k = 0 mode.
+    n_modes) as float64 numpy arrays, excluding the k = 0 mode. With
+    deconvolve_cic=True each mode is divided by the CIC window W(k)^2 (see
+    cic_window) before binning -- use it for a particle-painted (CIC) field to
+    remove the mass-assignment suppression; leave it off for a grid field.
     """
     N, L = box.n_mesh, box.box_size
     delta_k = mx.fft.rfftn(delta)
@@ -88,6 +110,8 @@ def power_spectrum(delta, box, dk=None, kmin=None, kmax=None):
     _, _, k_mag = k_grid(box)
 
     power_modes *= L**3 / N**6  # estimator normalization (inverse of generator)
+    if deconvolve_cic:
+        power_modes /= cic_window(box) ** 2
 
     kf = box.k_fundamental
     if dk is None:

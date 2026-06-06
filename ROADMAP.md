@@ -199,8 +199,10 @@ driver ties the config to it.
   compute, grad matching replay to ~1e-6. `mx.compile` of the force solve is
   ~1x (FFT-bound). See `scripts/bench_pm.py` and the module docstrings. Next
   here: generalize the adjoint IC step to cosmology params (autodiff Fisher).
-- More steps / higher resolution; convergence study vs an external reference
-  (pmwd / analytic). (2LPT ICs and FastPM kernels are now DONE -- Steps 2/3.)
+- More steps / higher resolution. Convergence cross-check vs analytic linear
+  theory + CCL is now DONE (see "External convergence cross-check" below); the
+  pmwd differentiable-PM peer comparison remains the open follow-on. (2LPT ICs and
+  FastPM kernels are also DONE -- Steps 2/3.)
 
 ## Known risks / open questions
 
@@ -210,4 +212,34 @@ driver ties the config to it.
 - **AD memory vs steps.** The unrolled graph can dominate memory; budget grids
   and step counts accordingly even with 128 GB unified memory.
 - **Validation.** Cross-check field statistics and gradients against pmwd or
-  analytic limits before trusting any `dlnP/df_NL` number.
+  analytic limits before trusting any `dlnP/df_NL` number. DONE for analytic
+  linear theory + CCL (see below); pmwd is the remaining peer cross-check.
+
+## External convergence cross-check  [analytic + CCL done]
+
+Before trusting any number, validate the forward model against references outside
+mbody. Two layers built (a pmwd differentiable-PM peer comparison is deferred):
+
+- **Analytic linear theory** (`scripts/probe_pk_convergence.py`,
+  `scripts/plot_convergence.py` -> `outputs/convergence.png`,
+  `tests/test_convergence.py`). On matched phases (cosmic variance cancels):
+  the matched transfer `T(k) = P_PM/P_lin -> 1` at the largest scales (absolute
+  growth + normalization; high-k droop is the coarse PM under-resolving small
+  scales, characterized not hidden); the propagator `r(k) -> 1` at low k and
+  decoheres as a standard PM; and large-scale growth converges to linear `D(a)`
+  (fastpm step-independent, exact converges up to it). Adds the CIC mass-assignment
+  window `fields.cic_window` + a `power_spectrum(deconvolve_cic=)` flag.
+- **Absolute f_NL bias amplitude** (`scripts/probe_fnl_amplitude.py`,
+  `bias.scale_dependent_bias_response[_binned]`). The Step-5 1/M(k) overlay was
+  shape-only; the first-principles amplitude is `dlnP_h/df_NL = 4 b2 sigma^2/(b1
+  M(k))` (a long mode modulating the small-scale variance), with `sigma^2 =
+  bias.mesh_variance` the mesh variance. The bin-AVERAGED predictor (matching the
+  band-power shell sum, like `ic.local_bispectrum_binned`) matches the autodiff
+  derivative to ~1-2% across the squeezed bins -- an absolute check with no free
+  normalization.
+- **CCL community-code anchor** (`scripts/probe_external_ccl.py`,
+  `tests/test_external_ccl.py`, gated on `pyccl`). Independent cross-check of the
+  cosmology layer: growth `D(z)` (<0.3% to z=9; the residual is mbody neglecting
+  radiation in `E(z)`), linear `P(k)` (EH98 vs CCL EH98 to ~1e-6; CAMB vs CCL CAMB
+  to <0.5%), and `sigma_R` / sigma8 (to ~1e-4). Catches convention bugs the
+  internal EH98-vs-CAMB check could share.

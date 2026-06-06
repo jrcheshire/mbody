@@ -104,6 +104,27 @@ tests/      unit + smoke tests
   (default fastpm) -- so the loose and config paths give the same physics. Pass
   `lpt_order=1` / `integrator="exact"` explicitly for the simpler variants.
 
+## External convergence cross-check
+
+The forward model is validated against references OUTSIDE mbody (ROADMAP
+"External convergence cross-check"). Two layers built; pmwd (a differentiable-PM
+peer) is deferred. (1) **Analytic linear theory** -- matched-phase transfer
+`T(k) = P_PM/P_lin -> 1` at large scales, propagator `r(k)`, and growth
+convergence (`scripts/probe_pk_convergence.py`, `pixi run convergence`,
+`tests/test_convergence.py`); added `fields.cic_window` + a
+`power_spectrum(deconvolve_cic=)` flag (particle-painted P(k) carries the CIC
+window; a grid field does not). (2) **Absolute f_NL bias amplitude** --
+`dlnP_h/df_NL = 4 b2 sigma^2/(b1 M(k))` (`bias.scale_dependent_bias_response`,
+its bin-averaged sibling `_binned`, and `bias.mesh_variance`), matched to autodiff
+to ~1-2% at low k; this upgrades the old SHAPE-only `scale_dependent_shape`
+overlay to an ABSOLUTE one (use `_binned` to match the band-power shell sum, like
+`ic.local_bispectrum_binned`). (3) **CCL anchor** -- `pyccl` is now a pixi dep;
+`scripts/probe_external_ccl.py` (`pixi run external-ccl`) + the GATED
+`tests/test_external_ccl.py` (skip if `pyccl` absent) cross-check growth / linear
+P(k) / sigma_R against the community code (EH98 vs CCL ~1e-6). Mind the units: CCL
+is physical Mpc, mbody is Mpc/h (`k_ccl = k h`, `P_mbody = P_ccl h^3`,
+`R_ccl = R/h`).
+
 ## Key references
 
 - Dalal et al. 2008 (arXiv:0710.4560) -- local-f_NL scale-dependent bias.
