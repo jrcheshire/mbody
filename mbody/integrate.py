@@ -165,16 +165,17 @@ def _wrap(x, box_size):
     return x - box_size * mx.floor(x / box_size)
 
 
-def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=1):
+def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=2):
     """LPT initial conditions (positions and momenta) at z_init.
 
-    First order (Zel'dovich): x = q + D1 Psi1, p = a_i^2 E D1 f1 Psi1 (the
-    growing-mode velocity). Second order (2LPT, lpt_order=2): adds D2 Psi2 to the
-    position and D2 f2 Psi2 to the velocity, with D2/f2 from cosmology's
-    second-order growth -- this curbs the Zel'dovich early-time transient. Both
-    returns are (n_particles^3, 3) float32 arrays; momenta are in the H0 = 1
-    units used by the stepper. `f_NL` (an mx scalar when differentiating) flows
-    into the displacement via ic.linear_density, so the whole evolved state is
+    Second order (2LPT, the default): x = q + D1 Psi1 - D2 Psi2, with the
+    growing-mode velocity p = a_i^2 E (D1 f1 Psi1 - D2 f2 Psi2); the D2 Psi2 term
+    curbs the Zel'dovich early-time transient. First order (Zel'dovich,
+    lpt_order=1): just x = q + D1 Psi1, p = a_i^2 E D1 f1 Psi1. The default
+    matches the SimConfig default (the loose and config APIs agree). Both returns
+    are (n_particles^3, 3) float32 arrays; momenta are in the H0 = 1 units used by
+    the stepper. `f_NL` (an mx scalar when differentiating) flows into the
+    displacement via ic.linear_density, so the whole evolved state is
     differentiable in f_NL.
     """
     a_i = 1.0 / (1.0 + time.z_init)
@@ -259,9 +260,9 @@ def leapfrog(
     compiled=False,
     memory_mode=None,
     integrator=None,
-    lpt_order=1,
+    lpt_order=2,
 ):
-    """Evolve Zel'dovich initial conditions to z_final with the PM leapfrog.
+    """Evolve LPT initial conditions to z_final with the PM leapfrog.
 
     Convenience wrapper: build the initial state and step it. Returns the final
     (positions, momenta), each (n_particles^3, 3) float32. Pass `f_NL` to inject
@@ -402,7 +403,7 @@ def adjoint_grad_fnl(
     spacing="linear",
     compiled=False,
     integrator=None,
-    lpt_order=1,
+    lpt_order=2,
 ):
     """Gradient d loss_field(x_final) / d f_NL via the reversible-leapfrog adjoint.
 

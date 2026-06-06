@@ -99,8 +99,10 @@ tests/      unit + smoke tests
   are the simpler implemented alternatives. `"bullfrog"` is the one reserved enum
   value `run()` still rejects with `NotImplementedError`. When adding an
   integrator or LPT order, implement + validate it before making it the default.
-  NB `integrate.leapfrog` / `initial_state` keep their own `lpt_order=1` default
-  (loose API); the fastpm+2LPT defaults live in SimConfig (the driver path).
+  The loose API agrees: `integrate.initial_state` / `leapfrog` / `adjoint_grad_fnl`
+  default `lpt_order=2`, and `leapfrog` resolves `integrator` from `time.integrator`
+  (default fastpm) -- so the loose and config paths give the same physics. Pass
+  `lpt_order=1` / `integrator="exact"` explicitly for the simpler variants.
 
 ## Key references
 

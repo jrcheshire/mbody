@@ -46,8 +46,10 @@ def test_kick_drift_factors_positive_and_additive():
 
 
 def test_initial_state_positions_and_growing_mode_velocity():
+    # The Zel'dovich (1LPT) growing-mode IC specifically -- pin lpt_order=1 since
+    # the loose-API default is now 2LPT.
     t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=10)
-    x, p = IG.initial_state(SMALL, COSMO, t, seed=0)
+    x, p = IG.initial_state(SMALL, COSMO, t, seed=0, lpt_order=1)
     npart = SMALL.n_particles**3
     assert tuple(x.shape) == (npart, 3) and tuple(p.shape) == (npart, 3)
     assert x.dtype == mx.float32 and p.dtype == mx.float32
