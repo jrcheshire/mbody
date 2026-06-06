@@ -65,7 +65,7 @@ def _k_components(box):
     return ikx, iky, ikz, mx.array(inv_k2)
 
 
-def zeldovich_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb"):
+def zeldovich_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb", amplitude=1.0):
     """First-order (Zel'dovich) displacement field, normalized to z = 0.
 
     Returns (psi_x, psi_y, psi_z), each a real float32 MLX array of shape
@@ -73,10 +73,14 @@ def zeldovich_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb"):
     at redshift z. The source density is ic.linear_density, so passing `f_NL`
     (as an mx scalar) injects local non-Gaussianity and keeps the whole
     displacement -- and anything built on it -- differentiable in f_NL; f_NL = 0
-    recovers the Gaussian field (to FFT round-off).
+    recovers the Gaussian field (to FFT round-off). `amplitude` (a differentiable
+    sigma8 / A_s proxy, default 1) scales the linear density at the source, so
+    Psi1 scales linearly with it; pass it as an mx scalar to differentiate.
     """
     N = box.n_mesh
-    delta0 = IC.linear_density(box, cosmo, seed=seed, z=0.0, f_NL=f_NL, backend=backend)
+    delta0 = amplitude * IC.linear_density(
+        box, cosmo, seed=seed, z=0.0, f_NL=f_NL, backend=backend
+    )
     dk = mx.fft.rfftn(delta0)
     ikx, iky, ikz, inv_k2 = _k_components(box)
     # i k_j / k^2 colours the noise into a displacement. This is exact for all
@@ -124,16 +128,22 @@ def lpt2_source(delta, box):
     return pxx * pyy + pxx * pzz + pyy * pzz - pxy**2 - pxz**2 - pyz**2
 
 
-def second_order_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb"):
+def second_order_displacement(
+    box, cosmo, seed=0, f_NL=0.0, backend="camb", amplitude=1.0
+):
     """Second-order (2LPT) displacement Psi2 = grad lap^-1 delta2, z=0 normalized.
 
     delta2 = lpt2_source(ic.linear_density). Uses the same i k_j / k^2 operator
     as zeldovich_displacement, so div Psi2 = -delta2. Returns (psi2_x, psi2_y,
     psi2_z), each a real float32 (N,N,N) MLX field in Mpc/h; multiply by D2(z)
     for the second-order displacement at redshift z. Differentiable in f_NL.
+    `amplitude` scales the linear density at the source; since delta2 is quadratic
+    in it, Psi2 scales as amplitude^2 -- the correct primordial-amplitude power.
     """
     N = box.n_mesh
-    delta0 = IC.linear_density(box, cosmo, seed=seed, z=0.0, f_NL=f_NL, backend=backend)
+    delta0 = amplitude * IC.linear_density(
+        box, cosmo, seed=seed, z=0.0, f_NL=f_NL, backend=backend
+    )
     d2k = mx.fft.rfftn(lpt2_source(delta0, box))
     ikx, iky, ikz, inv_k2 = _k_components(box)
     psi_x = mx.fft.irfftn(d2k * ikx * inv_k2, s=(N, N, N), axes=(0, 1, 2))
@@ -142,20 +152,24 @@ def second_order_displacement(box, cosmo, seed=0, f_NL=0.0, backend="camb"):
     return P.as_real(psi_x), P.as_real(psi_y), P.as_real(psi_z)
 
 
-def displacement(box, cosmo, order=1, seed=0, f_NL=0.0, backend="camb"):
+def displacement(box, cosmo, order=1, seed=0, f_NL=0.0, backend="camb", amplitude=1.0):
     """Lagrangian displacement field(s) normalized to z=0.
 
     order=1 returns (Psi1,); order=2 returns (Psi1, Psi2), where Psi1 is the
     Zel'dovich displacement and Psi2 the 2LPT correction. Each Psi is a tuple
     (psi_x, psi_y, psi_z) of real float32 (N,N,N) fields. The integrator scales
     them by the first- and second-order growth factors. Differentiable in f_NL.
+    `amplitude` scales the linear density at the source (Psi1 ~ amplitude, the
+    quadratic Psi2 ~ amplitude^2); pass it as an mx scalar to differentiate.
     """
-    psi1 = zeldovich_displacement(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
+    psi1 = zeldovich_displacement(
+        box, cosmo, seed=seed, f_NL=f_NL, backend=backend, amplitude=amplitude
+    )
     if order == 1:
         return (psi1,)
     if order == 2:
         psi2 = second_order_displacement(
-            box, cosmo, seed=seed, f_NL=f_NL, backend=backend
+            box, cosmo, seed=seed, f_NL=f_NL, backend=backend, amplitude=amplitude
         )
         return (psi1, psi2)
     raise ValueError(f"order must be 1 or 2 (got {order})")

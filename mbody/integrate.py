@@ -165,7 +165,9 @@ def _wrap(x, box_size):
     return x - box_size * mx.floor(x / box_size)
 
 
-def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=2):
+def initial_state(
+    box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=2, amplitude=1.0
+):
     """LPT initial conditions (positions and momenta) at z_init.
 
     Second order (2LPT, the default): x = q + D1 Psi1 - D2 Psi2, with the
@@ -176,7 +178,9 @@ def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=
     are (n_particles^3, 3) float32 arrays; momenta are in the H0 = 1 units used by
     the stepper. `f_NL` (an mx scalar when differentiating) flows into the
     displacement via ic.linear_density, so the whole evolved state is
-    differentiable in f_NL.
+    differentiable in f_NL. `amplitude` (a differentiable sigma8 / A_s proxy,
+    default 1) scales the linear IC density, so it propagates through LPT and the
+    PM evolution as a primordial amplitude (Psi1 ~ amplitude, Psi2 ~ amplitude^2).
     """
     a_i = 1.0 / (1.0 + time.z_init)
     E = float(_E_of_a(a_i, cosmo))
@@ -185,7 +189,7 @@ def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=
 
     if lpt_order == 1:
         psi = L.zeldovich_displacement(
-            box, cosmo, seed=seed, f_NL=f_NL, backend=backend
+            box, cosmo, seed=seed, f_NL=f_NL, backend=backend, amplitude=amplitude
         )
         x = L.displace(box, psi, D)
         p_coef = a_i**2 * E * D * f
@@ -193,7 +197,13 @@ def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=
         return x, p
     if lpt_order == 2:
         psi1, psi2 = L.displacement(
-            box, cosmo, order=2, seed=seed, f_NL=f_NL, backend=backend
+            box,
+            cosmo,
+            order=2,
+            seed=seed,
+            f_NL=f_NL,
+            backend=backend,
+            amplitude=amplitude,
         )
         D2 = C.growth_factor_2(time.z_init, cosmo)
         f2 = C.growth_rate_2(time.z_init, cosmo)
@@ -261,6 +271,7 @@ def leapfrog(
     memory_mode=None,
     integrator=None,
     lpt_order=2,
+    amplitude=1.0,
 ):
     """Evolve LPT initial conditions to z_final with the PM leapfrog.
 
@@ -285,7 +296,14 @@ def leapfrog(
     if integrator is None:
         integrator = time.integrator
     x0, p0 = initial_state(
-        box, cosmo, time, seed=seed, f_NL=f_NL, backend=backend, lpt_order=lpt_order
+        box,
+        cosmo,
+        time,
+        seed=seed,
+        f_NL=f_NL,
+        backend=backend,
+        lpt_order=lpt_order,
+        amplitude=amplitude,
     )
     steps = a_grid(time, spacing)
     if memory_mode is None:
@@ -392,6 +410,55 @@ def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None, integrator="exact"):
     return x, p
 
 
+def _reversible_ic_grad(
+    loss_field, ic_fn, theta, box, cosmo, time, spacing, compiled, integrator
+):
+    """Reversible-leapfrog adjoint: d loss_field(x_final) / d theta.
+
+    `ic_fn(theta) -> [x0, p0]` builds the initial state from the IC parameter(s)
+    theta. The four eager, O(grid)-memory stages are: build the IC, run the
+    leapfrog forward keeping only the final state, seed the backward sweep with
+    the loss cotangent at x_final, then walk the leapfrog backward (reconstructing
+    each state by reverse-stepping) and push the initial-state cotangent through
+    ic_fn back to theta. Peak memory is independent of the step count. The
+    reverse sweep does not depend on theta, so a vector theta gets every gradient
+    from the single final IC vjp -- shared by adjoint_grad_fnl and adjoint_grad_ic.
+    """
+    if integrator is None:
+        integrator = time.integrator
+    a_steps = a_grid(time, spacing)
+    co = _step_coeffs(a_steps, cosmo, integrator)
+    force_fn = FO.make_force_fn(box, compiled=compiled)
+    one_step, reverse_step = _make_steppers(box, force_fn)
+
+    # 1-2. IC, then eager forward keeping only the final state.
+    x, p = ic_fn(theta)
+    mx.eval(x, p)
+    for k1, dr, k2 in co:
+        x, p = one_step(x, p, k1, dr, k2)
+        mx.eval(x, p)
+
+    # 3. cotangent of the loss at the final positions.
+    _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
+    gp = mx.zeros_like(p)
+    mx.eval(gx, gp)
+
+    # 4. reverse adjoint sweep -- O(1) memory in the step count.
+    for k1, dr, k2 in reversed(co):
+        x_prev, p_prev = reverse_step(x, p, k1, dr, k2)
+        _, (gx, gp) = mx.vjp(
+            lambda a, b, k1=k1, dr=dr, k2=k2: one_step(a, b, k1, dr, k2),
+            [x_prev, p_prev],
+            [gx, gp],
+        )
+        x, p = x_prev, p_prev
+        mx.eval(x, p, gx, gp)
+
+    # 5. push the (x0, p0) cotangent through the IC back to the parameters.
+    _, (gtheta,) = mx.vjp(ic_fn, [theta], [gx, gp])
+    return gtheta
+
+
 def adjoint_grad_fnl(
     loss_field,
     box,
@@ -437,12 +504,6 @@ def adjoint_grad_fnl(
     """
     if not isinstance(f_NL, mx.array):
         f_NL = mx.array(f_NL)
-    if integrator is None:
-        integrator = time.integrator
-    a_steps = a_grid(time, spacing)
-    co = _step_coeffs(a_steps, cosmo, integrator)
-    force_fn = FO.make_force_fn(box, compiled=compiled)
-    one_step, reverse_step = _make_steppers(box, force_fn)
 
     def ic_fn(f):
         x0, p0 = initial_state(
@@ -450,29 +511,55 @@ def adjoint_grad_fnl(
         )
         return [x0, p0]
 
-    # 1-2. IC, then eager forward keeping only the final state.
-    x, p = ic_fn(f_NL)
-    mx.eval(x, p)
-    for k1, dr, k2 in co:
-        x, p = one_step(x, p, k1, dr, k2)
-        mx.eval(x, p)
+    return _reversible_ic_grad(
+        loss_field, ic_fn, f_NL, box, cosmo, time, spacing, compiled, integrator
+    )
 
-    # 3. cotangent of the loss at the final positions.
-    _, (gx,) = mx.vjp(loss_field, [x], [mx.array(1.0)])
-    gp = mx.zeros_like(p)
-    mx.eval(gx, gp)
 
-    # 4. reverse adjoint sweep -- O(1) memory in the step count.
-    for k1, dr, k2 in reversed(co):
-        x_prev, p_prev = reverse_step(x, p, k1, dr, k2)
-        _, (gx, gp) = mx.vjp(
-            lambda a, b, k1=k1, dr=dr, k2=k2: one_step(a, b, k1, dr, k2),
-            [x_prev, p_prev],
-            [gx, gp],
+def adjoint_grad_ic(
+    loss_field,
+    box,
+    cosmo,
+    time,
+    seed=0,
+    f_NL=0.0,
+    amplitude=1.0,
+    backend="camb",
+    spacing="linear",
+    compiled=False,
+    integrator=None,
+    lpt_order=2,
+):
+    """Gradient of loss_field(x_final) w.r.t. the IC parameters (f_NL, amplitude).
+
+    The multi-parameter generalization of adjoint_grad_fnl. Both parameters are
+    IC-stage -- they shape the initial conditions the leapfrog then evolves -- so
+    they SHARE the trajectory adjoint: one O(grid)-memory reverse sweep yields the
+    initial-state cotangent, and a single IC vjp returns both gradients at once.
+    The cost is therefore the same one sweep as adjoint_grad_fnl, NOT 2x (the
+    trajectory reverse-stepping is independent of how many IC parameters there
+    are; only the final, cheap IC vjp sees both).
+
+    Returns a length-2 mx.array [d loss / d f_NL, d loss / d amplitude]. For a
+    vector statistic (a P(k) over bins) call once per component. The memory and
+    reversibility caveats are those of adjoint_grad_fnl: eager, O(grid) memory,
+    ~2x compute, grad matching replay mx.grad to ~1e-6, not mx.grad-composable.
+    """
+    theta = mx.array([float(f_NL), float(amplitude)])
+
+    def ic_fn(t):
+        x0, p0 = initial_state(
+            box,
+            cosmo,
+            time,
+            seed=seed,
+            f_NL=t[0],
+            backend=backend,
+            lpt_order=lpt_order,
+            amplitude=t[1],
         )
-        x, p = x_prev, p_prev
-        mx.eval(x, p, gx, gp)
+        return [x0, p0]
 
-    # 5. push the (x0, p0) cotangent through the IC back to f_NL.
-    _, (gf,) = mx.vjp(ic_fn, [f_NL], [gx, gp])
-    return gf
+    return _reversible_ic_grad(
+        loss_field, ic_fn, theta, box, cosmo, time, spacing, compiled, integrator
+    )

@@ -29,6 +29,7 @@ from mbody.config import (
     InitialConditions,
     SimConfig,
     TimeStepping,
+    Tracer,
 )
 from mbody.driver import RunResult, run
 
@@ -50,6 +51,7 @@ __all__ = [
     "BoxConfig",
     "TimeStepping",
     "InitialConditions",
+    "Tracer",
     "SimConfig",
     "run",
     "RunResult",

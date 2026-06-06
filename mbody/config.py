@@ -224,8 +224,45 @@ class InitialConditions:
 
 
 @dataclass(frozen=True)
+class Tracer:
+    """A local quadratic-bias tracer of the density field, and its amplitude.
+
+    M-body's headline f_NL signal lives in a *biased tracer*, not the matter
+    field (matter has no O(f_NL) power response). The minimal differentiable
+    tracer is the Eulerian local quadratic bias
+
+        delta_h = b1 delta + (b2/2) (delta^2 - <delta^2>),
+
+    optionally with the underlying linear field rescaled by an amplitude A. The
+    three are the differentiable nuisance parameters of a Fisher forecast over
+    f_NL (mbody.fisher).
+
+    Parameters
+    ----------
+    b1 : linear bias. delta_h ~ b1 delta on large scales; b1 = 1 is unbiased,
+        b1 = 0 is forbidden (no linear response to differentiate).
+    b2 : quadratic bias. The (b2/2) delta^2 term couples to the squeezed
+        bispectrum of the f_NL field, producing the Dalal 1/M(k) scale-dependent
+        bias the forecast constrains.
+    A : linear amplitude of the density field (a differentiable sigma8 / A_s
+        proxy). A = 1 is the identity; sigma8's own normalization is numpy, off
+        the autodiff graph, so A is the in-graph amplitude axis. Must be > 0.
+    """
+
+    b1: float = 2.0
+    b2: float = 1.0
+    A: float = 1.0
+
+    def __post_init__(self):
+        if self.b1 == 0.0:
+            raise ValueError("b1 must be nonzero (no linear response otherwise)")
+        if self.A <= 0.0:
+            raise ValueError(f"A must be positive (got {self.A})")
+
+
+@dataclass(frozen=True)
 class SimConfig:
-    """Top-level configuration aggregating the four sub-configs.
+    """Top-level configuration aggregating the sub-configs.
 
     One SimConfig fully specifies a run. Construct with all defaults via
     ``SimConfig()``, or override piecewise, e.g.::
@@ -234,16 +271,22 @@ class SimConfig:
             box=BoxConfig(box_size=512.0, n_mesh=256),
             ic=InitialConditions(f_NL=100.0, kind="local_fnl"),
         )
+
+    `tracer` carries the biased-tracer parameters (b1, b2, A) used by the Fisher
+    forecast (mbody.fisher); its A = 1 default is the identity, so a plain
+    ``run(SimConfig())`` evolves matter unchanged.
     """
 
     cosmology: Cosmology = field(default_factory=Cosmology)
     box: BoxConfig = field(default_factory=BoxConfig)
     time: TimeStepping = field(default_factory=TimeStepping)
     ic: InitialConditions = field(default_factory=InitialConditions)
+    tracer: Tracer = field(default_factory=Tracer)
 
     def summary(self):
         """Human-readable one-screen summary, handy in scripts and logs."""
         c, b, t = self.cosmology, self.box, self.time
+        tr = self.tracer
         return (
             "M-body SimConfig\n"
             f"  cosmology: Omega_m={c.Omega_m} Omega_b={c.Omega_b} h={c.h} "
@@ -256,5 +299,6 @@ class SimConfig:
             f"  time:      z {t.z_init} -> {t.z_final} in {t.n_steps} steps "
             f"({t.integrator}, {t.memory_mode})\n"
             f"  ic:        kind={self.ic.kind} f_NL={self.ic.f_NL} "
-            f"lpt_order={self.ic.lpt_order} seed={self.ic.seed}"
+            f"lpt_order={self.ic.lpt_order} seed={self.ic.seed}\n"
+            f"  tracer:    b1={tr.b1} b2={tr.b2} A={tr.A}"
         )
