@@ -276,3 +276,216 @@ def cross_power(delta_a, delta_b, box, k_bins, dk=None):
     norm = L**3 / N**6
     bins = [norm * mx.sum(mk * cross) / c for mk, c in zip(masks, counts)]
     return mx.stack(bins)
+
+
+# --- Redshift-space multipoles (anisotropic P(k)) ----------------------------
+#
+# In redshift space P(k) is anisotropic, P(k, mu) with mu = k_los/|k| the cosine
+# to the line of sight, and is summarized by its Legendre multipoles P_ell(k).
+# For a periodic box with a *fixed* Cartesian line of sight, the plane-parallel
+# estimator (the Yamamoto pair-LOS form is needed only for survey geometry) is
+#
+#     P_ell(k) = (2 ell + 1) * mean_{shell}[ |delta_k|^2 L_ell(mu) ],
+#
+# the same V/N^6 normalization and rfftn half-grid shells as band_power, with an
+# extra Legendre weight per mode. Even multipoles (ell = 0, 2, 4) depend only on
+# |mu|, so the half-grid (which samples |mu| completely by Hermitian symmetry) is
+# sufficient. ell = 0 reduces exactly to band_power.
+#
+# Two finite-mesh subtleties, both validated rather than assumed (probe_rsd.py):
+#   * Line of sight MUST be a full fft axis (0 or 1), not the rfft axis (2): on
+#     the half-grid the kz = 0 plane has mu = 0 for a whole plane of modes, which
+#     skews the discrete shell-average of the Legendre weights badly.
+#   * A thin shell samples solid angle non-uniformly, so the raw estimator leaks
+#     power between multipoles (<L_ell>_shell != 0). multipole_decoupling inverts
+#     that to recover the continuum multipoles for interpretation/validation; the
+#     Fisher uses the raw multipoles (a forecast is invariant to that linear map).
+#     At toy box sizes P0 and P2 recover Kaiser well; P4 is noise-dominated (its
+#     signal is ~0.04 P0).
+
+
+def _mu_grid(box, los_axis=0):
+    """mu = k_los/|k| on the rfftn half-grid (float64, k = 0 -> 0).
+
+    `los_axis` picks the line of sight. Use a FULL fft axis (0 or 1); the rfft
+    (last) axis 2 is supported but skews the discrete multipole average (see the
+    module note above). Returned shape matches k_grid's k_mag, (N, N, N//2 + 1).
+    Only |mu| matters for even multipoles, and k_los is taken non-negative, so mu
+    lands in [0, 1].
+    """
+    k_1d, kz_1d, k_mag = k_grid(box)
+    if los_axis == 0:
+        k_los = np.abs(k_1d)[:, None, None]
+    elif los_axis == 1:
+        k_los = np.abs(k_1d)[None, :, None]
+    elif los_axis == 2:
+        k_los = kz_1d[None, None, :]
+    else:
+        raise ValueError(f"los_axis must be 0, 1 or 2 (got {los_axis})")
+    mu = np.zeros_like(k_mag)
+    nz = k_mag > 0
+    mu[nz] = np.broadcast_to(k_los, k_mag.shape)[nz] / k_mag[nz]
+    return mu
+
+
+def _legendre_weight(mu, ell):
+    """Legendre polynomial L_ell(mu) on the grid (float64). ell in {0, 2, 4}."""
+    mu2 = mu**2
+    if ell == 0:
+        return np.ones_like(mu)
+    if ell == 2:
+        return 0.5 * (3.0 * mu2 - 1.0)
+    if ell == 4:
+        return 0.125 * (35.0 * mu2**2 - 30.0 * mu2 + 3.0)
+    raise ValueError(f"ell must be 0, 2 or 4 (got {ell})")
+
+
+def band_power_multipole(delta, box, k_bins, ell, los_axis=0, dk=None):
+    """Differentiable redshift-space multipole band power P_ell(k) (raw).
+
+    P_ell[b] = (2 ell + 1) (V / N^6) sum_{shell b} L_ell(mu) |delta_k|^2 / count_b
+    -- the anisotropic sibling of band_power, with mu = k_los/|k| (`los_axis`) and
+    the closed-form Legendre weight. ell in {0, 2, 4}; ell = 0 is band_power.
+    Differentiable in `delta` (the mu / Legendre grids are constants), so it backs
+    the redshift-space Fisher data vector. This is the RAW estimator (it carries
+    the discrete-shell multipole leakage); the Fisher is invariant to undoing it,
+    so the leakage is corrected only in power_multipoles for interpretation.
+    Returns an MLX vector.
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    masks, counts = _bin_masks(box, k_bins, dk)
+    leg = mx.array(_legendre_weight(_mu_grid(box, los_axis), ell).astype(np.float32))
+    weighted = leg * mx.abs(mx.fft.rfftn(delta)) ** 2
+    norm = (2 * ell + 1) * L**3 / N**6
+    bins = [norm * mx.sum(mk * weighted) / c for mk, c in zip(masks, counts)]
+    return mx.stack(bins)
+
+
+def multipole_decoupling(box, k_bins, ells=(0, 2), los_axis=0, dk=None):
+    """Per-bin inverse of the discrete-shell multipole mode-coupling matrix.
+
+    On a finite mesh a thin |k| shell samples solid angle non-uniformly, so the
+    raw estimator mixes multipoles:
+
+        raw_ell[b] = sum_L M_b[ell, L] P_L[b],
+        M_b[ell, L] = (2 ell + 1) mean_{shell b}[ L_ell(mu) L_L(mu) ],
+
+    which is the identity only in the continuum (<L_ell L_L> = delta/(2 ell+1)).
+    Returns the list of inverse matrices M_b^{-1} (float64, one per bin) so the
+    corrected multipoles are P[b] = M_b^{-1} raw[b]. Geometric (field-independent),
+    so applying it to differentiable raw band powers preserves differentiability;
+    and being a constant linear map of the data vector it leaves a Fisher forecast
+    invariant -- it is needed only to interpret/validate the multipoles against
+    continuum theory.
+    """
+    if dk is None:
+        dk = box.k_fundamental
+    _, _, k_mag = k_grid(box)
+    mu = _mu_grid(box, los_axis)
+    Ls = [_legendre_weight(mu, el) for el in ells]
+    inv = []
+    for kc in k_bins:
+        m = _shell_mask(k_mag, kc - 0.5 * dk, kc + 0.5 * dk)
+        M = np.array(
+            [
+                [
+                    (2 * el + 1) * float((Ls[i][m] * Ls[j][m]).mean())
+                    for j in range(len(ells))
+                ]
+                for i, el in enumerate(ells)
+            ]
+        )
+        inv.append(np.linalg.inv(M))
+    return inv
+
+
+def power_multipoles(
+    delta,
+    box,
+    ells=(0, 2),
+    los_axis=0,
+    dk=None,
+    kmin=None,
+    kmax=None,
+    deconvolve_cic=False,
+    decouple=True,
+):
+    """Estimate redshift-space multipoles P_ell(k) of a real field (diagnostic).
+
+    Bins (2 ell + 1) L_ell(mu) |delta_k|^2 in |k| shells with the V/N^6
+    normalization, then -- when decouple=True (default) -- inverts the
+    discrete-shell mode-coupling (see multipole_decoupling) so the returned
+    multipoles match continuum theory. Returns (k_centers, {ell: P_ell}, n_modes)
+    as float64 numpy arrays, excluding k = 0. `deconvolve_cic` divides out the CIC
+    window W(k)^2 (use for a particle-painted field). ells defaults to (0, 2); P4
+    is available but noise-dominated at small box sizes (its signal is ~0.04 P0).
+    Off the autodiff path; use band_power_multipole where a differentiable
+    multipole is needed.
+    """
+    N, L = box.n_mesh, box.box_size
+    power_modes = np.asarray(mx.abs(mx.fft.rfftn(delta)) ** 2, dtype=np.float64)
+    _, _, k_mag = k_grid(box)
+    power_modes *= L**3 / N**6
+    if deconvolve_cic:
+        power_modes /= cic_window(box) ** 2
+    mu = _mu_grid(box, los_axis)
+
+    kf = box.k_fundamental
+    if dk is None:
+        dk = kf
+    if kmin is None:
+        kmin = 0.5 * kf
+    if kmax is None:
+        kmax = box.k_nyquist
+    edges = np.arange(kmin, kmax + dk, dk)
+
+    km = k_mag.ravel()
+    counts, _ = np.histogram(km, bins=edges)
+    centers = 0.5 * (edges[1:] + edges[:-1])
+    good = counts > 0
+    kcen = centers[good]
+
+    raw = {}
+    for el in ells:
+        w = _legendre_weight(mu, el).ravel() * power_modes.ravel()
+        sum_p, _ = np.histogram(km, bins=edges, weights=w)
+        raw[el] = (2 * el + 1) * sum_p[good] / counts[good]
+
+    if not decouple:
+        return kcen, raw, counts[good]
+
+    inv = multipole_decoupling(box, kcen, ells=ells, los_axis=los_axis, dk=dk)
+    raw_mat = np.array([raw[el] for el in ells])  # (n_ell, n_bin)
+    dec = np.array([inv[b] @ raw_mat[:, b] for b in range(raw_mat.shape[1])]).T
+    return kcen, {el: dec[i] for i, el in enumerate(ells)}, counts[good]
+
+
+def interlaced_density_contrast(positions, box):
+    """CIC density contrast with interlacing, to suppress mass-assignment aliasing.
+
+    Paints the particles on the mesh and on a second copy shifted by half a cell
+    in every dimension, then averages the two in Fourier space after realigning
+    the shifted one by its phase exp(i k . s), s = (d/2, d/2, d/2), d = L/N. This
+    cancels the leading (odd) aliasing images of the CIC assignment (Sefusatti et
+    al. 2016, arXiv:1512.07295), sharpening the multipoles at intermediate k where
+    aliasing contaminates the anisotropic signal most. A drop-in replacement for
+    painting.density_contrast: returns a real (N, N, N) field, differentiable in
+    positions. The CIC window W(k) suppression remains -- deconvolve it in the
+    estimator (deconvolve_cic) as usual. Used only by the estimator, never the
+    force solve.
+    """
+    from mbody import painting as PA  # local import: painting must not import fields
+
+    N, L = box.n_mesh, box.box_size
+    d = L / N
+    mean = positions.shape[0] / (N**3)
+    delta1 = PA.cic_paint(positions, box) / mean - 1.0
+    delta2 = PA.cic_paint(positions + 0.5 * d, box) / mean - 1.0
+
+    k_1d, kz_1d, _ = k_grid(box)
+    kdots = 0.5 * d * (k_1d[:, None, None] + k_1d[None, :, None] + kz_1d[None, None, :])
+    phase = mx.array(np.exp(1j * kdots).astype(np.complex64))
+    delta_k = 0.5 * (mx.fft.rfftn(delta1) + phase * mx.fft.rfftn(delta2))
+    return mx.fft.irfftn(delta_k, s=(N, N, N), axes=(0, 1, 2))
