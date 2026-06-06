@@ -72,6 +72,48 @@ def test_initial_state_positions_and_growing_mode_velocity():
     assert rel < 1e-5
 
 
+def _painted_skewness(x, box):
+    f = np.asarray(PA.density_contrast(x, box), np.float64).ravel()
+    f = f - f.mean()
+    return np.mean(f**3) / np.mean(f**2) ** 1.5
+
+
+def test_initial_state_2lpt_valid_and_differs():
+    box = BoxConfig(box_size=200.0, n_mesh=32, n_particles=32)
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=10)
+    x1, _ = IG.initial_state(box, COSMO, t, seed=1, backend="eh98", lpt_order=1)
+    x2, p2 = IG.initial_state(box, COSMO, t, seed=1, backend="eh98", lpt_order=2)
+    npart = box.n_particles**3
+    assert tuple(x2.shape) == (npart, 3) and tuple(p2.shape) == (npart, 3)
+    assert x2.dtype == mx.float32 and p2.dtype == mx.float32
+    assert float(mx.min(x2)) >= 0.0 and float(mx.max(x2)) < box.box_size
+    assert bool(mx.all(mx.isfinite(x2))) and bool(mx.all(mx.isfinite(p2)))
+    # 2LPT adds a real second-order term, so it must differ from Zel'dovich.
+    assert float(mx.max(mx.abs(x2 - x1))) > 0.0
+
+
+def test_initial_state_2lpt_increases_skewness():
+    # The 2LPT correction sources gravitational collapse, so its IC density is
+    # MORE positively skewed than the Zel'dovich IC. This pins the sign of the
+    # second-order term: a flipped sign would push the skewness below ZA.
+    box = BoxConfig(box_size=200.0, n_mesh=32, n_particles=32)
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=10)
+    x1, _ = IG.initial_state(box, COSMO, t, seed=1, backend="eh98", lpt_order=1)
+    x2, _ = IG.initial_state(box, COSMO, t, seed=1, backend="eh98", lpt_order=2)
+    s1 = _painted_skewness(x1, box)
+    s2 = _painted_skewness(x2, box)
+    assert s1 > 0.0
+    assert s2 > s1
+
+
+def test_initial_state_invalid_lpt_order():
+    import pytest
+
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=4)
+    with pytest.raises(ValueError):
+        IG.initial_state(SMALL, COSMO, t, seed=0, lpt_order=3)
+
+
 def test_determinism():
     t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=3)
     xa, _ = IG.leapfrog(SMALL, COSMO, t, seed=4)

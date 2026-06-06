@@ -12,6 +12,7 @@ import numpy as np
 
 from mbody.config import BoxConfig, Cosmology
 from mbody import cosmology as C
+from mbody import fields as F
 from mbody import ic as IC
 from mbody import lpt as L
 
@@ -101,3 +102,66 @@ def test_npart_must_equal_nmesh():
     bad = BoxConfig(box_size=128.0, n_mesh=64, n_particles=32)
     with pytest.raises(ValueError):
         L.lpt_positions(bad, COSMO, seed=0, z=0.0)
+
+
+# --- 2LPT: second-order displacement -----------------------------------------
+
+
+def test_lpt2_divergence_identity():
+    # div(Psi2) = -delta2, the second-order analogue of the Zel'dovich identity.
+    # delta2 (a quadratic field) piles power near Nyquist, so the real-space L2
+    # residual is larger than for Psi1; the operator itself is exact on every
+    # resolved mode, which is what the Fourier check below pins.
+    delta = IC.linear_density(BOX, COSMO, seed=0, z=0.0, f_NL=0.0)
+    delta2 = L.lpt2_source(delta, BOX)
+    div = L.divergence(BOX, *L.second_order_displacement(BOX, COSMO, seed=0))
+
+    a = np.asarray(div, dtype=np.float64).ravel()
+    b = -np.asarray(delta2, dtype=np.float64).ravel()
+    assert np.corrcoef(a, b)[0, 1] > 0.99
+
+    N = BOX.n_mesh
+    nyq = N // 2
+    divk = np.fft.rfftn(np.asarray(div, dtype=np.float64))
+    d2k = np.fft.rfftn(np.asarray(delta2, dtype=np.float64))
+    kxi = np.fft.fftfreq(N)
+    kzi = np.fft.rfftfreq(N)
+    KX, KY, KZ = np.meshgrid(kxi, kxi, kzi, indexing="ij")
+    # Exclude the Nyquist planes (gradient ambiguity) and the k=0 mode: delta2
+    # has a nonzero mean, but the i k / k^2 operator gives Psi2 zero mean, so the
+    # identity holds only for the fluctuating part.
+    dc = (KX == 0) & (KY == 0) & (KZ == 0)
+    resolved = (KX != kxi[nyq]) & (KY != kxi[nyq]) & (KZ != kzi[nyq]) & ~dc
+    res = np.max(np.abs((divk + d2k)[resolved])) / np.max(np.abs(d2k[resolved]))
+    assert res < 1e-4
+
+
+def test_lpt2_source_differentiable_in_fnl():
+    # The 2LPT source is quadratic in the linear density, so f_NL flows through
+    # it (pure FFT path -- no CIC floor). mx.grad matches a central difference.
+    box = BoxConfig(box_size=200.0, n_mesh=32, n_particles=32)
+    k_bins = [2.0 * box.k_fundamental]
+
+    def loss(f):
+        d2 = L.lpt2_source(
+            IC.linear_density(box, COSMO, seed=2, z=0.0, f_NL=f, backend="eh98"), box
+        )
+        return F.band_power(d2, box, k_bins)[0]
+
+    g = float(mx.grad(loss)(mx.array(50.0)))
+    h = 5.0
+    fd = (float(loss(mx.array(50.0 + h))) - float(loss(mx.array(50.0 - h)))) / (2 * h)
+    assert abs(g / fd - 1.0) < 1e-2
+
+
+def test_displacement_wrapper_orders():
+    import pytest
+
+    one = L.displacement(BOX, COSMO, order=1, seed=0)
+    two = L.displacement(BOX, COSMO, order=2, seed=0)
+    assert len(one) == 1 and len(two) == 2
+    # order-1 component of the wrapper is exactly the Zel'dovich displacement.
+    psi1 = L.zeldovich_displacement(BOX, COSMO, seed=0)
+    assert float(mx.max(mx.abs(two[0][0] - psi1[0]))) == 0.0
+    with pytest.raises(ValueError):
+        L.displacement(BOX, COSMO, order=3, seed=0)

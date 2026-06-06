@@ -385,6 +385,28 @@ def growth_rate(z, cosmo):
     return float(out) if z_arr.ndim == 0 else out
 
 
+def growth_factor_2(z, cosmo):
+    """Second-order growth factor D2(z) for 2LPT, the EdS approximation.
+
+    D2 = -(3/7) D1^2 (Bouchet et al. 1995; the standard choice for 2LPT initial
+    conditions, e.g. 2LPTic / Scoccimarro). Normalized consistently with the
+    first-order growth_factor (D1(z=0) = 1), so the second-order Lagrangian
+    displacement scales as Psi = D1 Psi1 + D2 Psi2. The LCDM correction
+    Omega_m(a)^(-1/143) is < 0.5% for these parameters and is dropped.
+    """
+    D1 = growth_factor(z, cosmo)
+    return -(3.0 / 7.0) * D1**2
+
+
+def growth_rate_2(z, cosmo):
+    """Second-order growth rate f2 = dlnD2/dlna.
+
+    Since D2 ~ D1^2 in the EdS approximation, f2 = 2 f1 exactly. Sets the
+    second-order growing-mode velocity in the 2LPT initial conditions.
+    """
+    return 2.0 * growth_rate(z, cosmo)
+
+
 # --------------------------------------------------------------------------
 # Linear power spectrum + sigma(R) normalization
 # --------------------------------------------------------------------------

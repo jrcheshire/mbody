@@ -57,10 +57,12 @@ def test_run_rejects_unimplemented_integrator():
         mbody.run(cfg, backend="eh98")
 
 
-def test_run_rejects_unimplemented_lpt_order():
-    cfg = _cfg(lpt_order=2)
-    with pytest.raises(NotImplementedError):
-        mbody.run(cfg, backend="eh98")
+def test_run_supports_2lpt():
+    # lpt_order=2 is now implemented: the driver runs it and the 2LPT IC differs
+    # from the Zel'dovich one at the same seed.
+    res1 = mbody.run(_cfg(seed=8, lpt_order=1), backend="eh98")
+    res2 = mbody.run(_cfg(seed=8, lpt_order=2), backend="eh98")
+    assert not np.allclose(np.asarray(res1.ic_field), np.asarray(res2.ic_field))
 
 
 def test_run_threads_fnl():

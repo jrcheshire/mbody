@@ -102,28 +102,53 @@ def _wrap(x, box_size):
     return x - box_size * mx.floor(x / box_size)
 
 
-def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb"):
-    """Zel'dovich initial conditions (positions and momenta) at z_init.
+def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=1):
+    """LPT initial conditions (positions and momenta) at z_init.
 
-    Positions x = q + D(a_i) Psi_0; momenta p = a_i^2 E(a_i) D(a_i) f(a_i) Psi_0
-    (the growing-mode velocity). Both are (n_particles^3, 3) float32 arrays;
-    momenta are in the H0 = 1 units used by the stepper. `f_NL` (an mx scalar
-    when differentiating) flows into the displacement via ic.linear_density, so
-    the whole evolved state is differentiable in f_NL.
+    First order (Zel'dovich): x = q + D1 Psi1, p = a_i^2 E D1 f1 Psi1 (the
+    growing-mode velocity). Second order (2LPT, lpt_order=2): adds D2 Psi2 to the
+    position and D2 f2 Psi2 to the velocity, with D2/f2 from cosmology's
+    second-order growth -- this curbs the Zel'dovich early-time transient. Both
+    returns are (n_particles^3, 3) float32 arrays; momenta are in the H0 = 1
+    units used by the stepper. `f_NL` (an mx scalar when differentiating) flows
+    into the displacement via ic.linear_density, so the whole evolved state is
+    differentiable in f_NL.
     """
-    psi = L.zeldovich_displacement(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
     a_i = 1.0 / (1.0 + time.z_init)
+    E = float(_E_of_a(a_i, cosmo))
     D = C.growth_factor(time.z_init, cosmo)
     f = C.growth_rate(time.z_init, cosmo)
-    E = float(_E_of_a(a_i, cosmo))
 
-    x = L.displace(box, psi, D)
-    p_coef = a_i**2 * E * D * f
-    px = (p_coef * psi[0]).reshape(-1)
-    py = (p_coef * psi[1]).reshape(-1)
-    pz = (p_coef * psi[2]).reshape(-1)
-    p = mx.stack([px, py, pz], axis=1)
-    return x, p
+    if lpt_order == 1:
+        psi = L.zeldovich_displacement(
+            box, cosmo, seed=seed, f_NL=f_NL, backend=backend
+        )
+        x = L.displace(box, psi, D)
+        p_coef = a_i**2 * E * D * f
+        p = mx.stack([(p_coef * psi[c]).reshape(-1) for c in range(3)], axis=1)
+        return x, p
+    if lpt_order == 2:
+        psi1, psi2 = L.displacement(
+            box, cosmo, order=2, seed=seed, f_NL=f_NL, backend=backend
+        )
+        D2 = C.growth_factor_2(time.z_init, cosmo)
+        f2 = C.growth_rate_2(time.z_init, cosmo)
+        # mbody's Psi is +grad lap^-1 delta (so div Psi = -delta), the opposite
+        # potential sign to the textbook 2LPT x = q - D1 grad psi1 + D2 grad psi2.
+        # That flips the sign of the second-order term: the coefficient of Psi2
+        # is -D2 = +(3/7) D1^2. Validated by the skewness test (sign = collapse).
+        dx = [D * psi1[c] - D2 * psi2[c] for c in range(3)]
+        x = L.displace(box, dx, 1.0)
+        p_coef = a_i**2 * E
+        p = mx.stack(
+            [
+                (p_coef * (D * f * psi1[c] - D2 * f2 * psi2[c])).reshape(-1)
+                for c in range(3)
+            ],
+            axis=1,
+        )
+        return x, p
+    raise ValueError(f"lpt_order must be 1 or 2 (got {lpt_order})")
 
 
 def evolve_state(x, p, box, cosmo, a_steps, snapshot=None, force_fn=None):

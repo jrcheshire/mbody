@@ -37,11 +37,6 @@ def _check_supported(cfg):
             "not implemented; only 'exact' (exact-background leapfrog) runs. "
             "FastPM / BullFrog kernels are a roadmap Stretch item."
         )
-    if cfg.ic.lpt_order != 1:
-        raise NotImplementedError(
-            f"lpt_order={cfg.ic.lpt_order} is reserved but not implemented; only "
-            "1 (Zel'dovich) runs. 2LPT is a roadmap Stretch item."
-        )
 
 
 @dataclasses.dataclass(eq=False)
@@ -135,7 +130,13 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         recorder = SnapshotRecorder(box)
 
     x0, p0 = IG.initial_state(
-        box, cosmo, time, seed=ic.seed, f_NL=ic.f_NL, backend=backend
+        box,
+        cosmo,
+        time,
+        seed=ic.seed,
+        f_NL=ic.f_NL,
+        backend=backend,
+        lpt_order=ic.lpt_order,
     )
     steps = IG.a_grid(time, spacing)
     xf, pf = IG.evolve_state(x0, p0, box, cosmo, steps, snapshot=recorder)
