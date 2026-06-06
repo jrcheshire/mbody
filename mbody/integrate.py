@@ -43,9 +43,12 @@ operation across all steps. The optional `snapshot` callback is for diagnostics
 and the structure-formation animation only -- it is off the autodiff path (its
 return value is ignored), so pass snapshot=None when differentiating.
 
-This is the exact-background leapfrog (stage 1). The FastPM growth-corrected
-kick/drift kernels (Feng et al. 2016), which reproduce linear growth at very low
-step count, are a documented next layer to be checked against this baseline.
+Two integrators share this KDK structure, selected by `integrator`: "exact"
+integrates the background factors literally (a ~2% growth deficit at low step
+count), and "fastpm" uses the growth-corrected kick/drift kernels (Feng et al.
+2016, fastpm_kick_factor / fastpm_drift_factor) that make a single linear mode
+grow exactly as D(a) at any step count. Both are constants of the step, so the
+gradient (mx.grad and the reversible adjoint) is unaffected by the choice.
 """
 
 import mlx.core as mx
@@ -80,6 +83,66 @@ def drift_factor(a0, a1, cosmo):
     """
     val, _ = quad(lambda a: 1.0 / (a**3 * _E_of_a(a, cosmo)), a0, a1)
     return val
+
+
+# --- FastPM growth-corrected kick/drift (Feng et al. 2016) -------------------
+#
+# The "exact" kick/drift above integrate the background factors literally and
+# pick up a ~2% growth deficit at low step count. FastPM instead chooses the
+# coefficients so a single linear (Zel'dovich) mode is integrated *exactly* at
+# any step size. mbody's momentum convention already matches FastPM's
+# (p = a^3 E D' s = G_f(a) s), so the modified factors translate directly; they
+# remain constants of the step (float64 CPU, not in the AD graph), so mx.grad
+# and the reversible adjoint are unaffected.
+
+
+def _D_and_deriv(a, cosmo):
+    """Growth factor D(a) and its scale-factor derivative D'(a) = D f / a."""
+    z = 1.0 / a - 1.0
+    D = C.growth_factor(z, cosmo)
+    f = C.growth_rate(z, cosmo)
+    return D, D * f / a
+
+
+def _G_f(a, cosmo):
+    """FastPM auxiliary G_f(a) = a^3 E(a) D'(a) -- the momentum of a unit
+    Zel'dovich mode at a (equals mbody's IC momentum coefficient a^2 E D f)."""
+    _, Dp = _D_and_deriv(a, cosmo)
+    return a**3 * float(_E_of_a(a, cosmo)) * Dp
+
+
+def _g_f(a, cosmo, rel=1e-5):
+    """dG_f/da via a central difference (a smooth float64 background quantity)."""
+    h = rel * a
+    return (_G_f(a + h, cosmo) - _G_f(a - h, cosmo)) / (2.0 * h)
+
+
+def fastpm_drift_factor(a0, a1, a_r, cosmo):
+    """FastPM drift coefficient (Feng et al. 2016, Eq. 24).
+
+    [D(a1) - D(a0)] / [a_r^3 E(a_r) D'(a_r)], with the momentum defined at the
+    reference scale a_r. A Zel'dovich mode (momentum a_r^3 E D'(a_r) s) then
+    drifts by exactly [D(a1) - D(a0)] s. Reduces to the exact drift integrand
+    1/(a^3 E) as a1 -> a0.
+    """
+    D0, _ = _D_and_deriv(a0, cosmo)
+    D1, _ = _D_and_deriv(a1, cosmo)
+    _, Dpr = _D_and_deriv(a_r, cosmo)
+    return (D1 - D0) / (a_r**3 * float(_E_of_a(a_r, cosmo)) * Dpr)
+
+
+def fastpm_kick_factor(a0, a1, a_r, cosmo):
+    """FastPM kick coefficient (Feng et al. 2016, Eq. 25).
+
+    (3/2) Omega_m [G_f(a1) - G_f(a0)] / [a_r^2 E(a_r) g_f(a_r)], with the force
+    evaluated at a_r. Applied to mbody's geometric acceleration g, it advances a
+    Zel'dovich mode's momentum exactly from G_f(a0) s to G_f(a1) s. The (3/2)
+    Omega_m converts the geometric g into the FastPM force; reduces to the exact
+    kick integrand (3/2) Omega_m / (a^2 E) as a1 -> a0.
+    """
+    num = _G_f(a1, cosmo) - _G_f(a0, cosmo)
+    den = a_r**2 * float(_E_of_a(a_r, cosmo)) * _g_f(a_r, cosmo)
+    return 1.5 * cosmo.Omega_m * num / den
 
 
 def a_grid(time, spacing="linear"):
@@ -151,13 +214,16 @@ def initial_state(box, cosmo, time, seed=0, f_NL=0.0, backend="camb", lpt_order=
     raise ValueError(f"lpt_order must be 1 or 2 (got {lpt_order})")
 
 
-def evolve_state(x, p, box, cosmo, a_steps, snapshot=None, force_fn=None):
+def evolve_state(
+    x, p, box, cosmo, a_steps, snapshot=None, force_fn=None, integrator="exact"
+):
     """Leapfrog (KDK) from a_steps[0] to a_steps[-1], given initial (x, p).
 
     Pure function of the initial state -- mx.grad flows through it. One force
-    solve per step (consecutive half kicks reuse the same force). `force_fn` is
-    the callable that maps positions to the geometric acceleration; pass one
-    from `forces.make_force_fn` to opt into the compiled and/or
+    solve per step (consecutive half kicks reuse the same force). `integrator`
+    selects the kick/drift coefficients ("exact" or growth-corrected "fastpm").
+    `force_fn` is the callable that maps positions to the geometric acceleration;
+    pass one from `forces.make_force_fn` to opt into the compiled and/or
     gradient-checkpointed solve. It defaults to the plain eager force, so the
     kick/drift scalars, the periodic wrap, and the snapshot callback all stay in
     eager Python -- only the force solve is ever fused/checkpointed. The optional
@@ -171,15 +237,13 @@ def evolve_state(x, p, box, cosmo, a_steps, snapshot=None, force_fn=None):
     if snapshot is not None:
         snapshot(0, float(a_steps[0]), x, p)
 
-    for i in range(len(a_steps) - 1):
-        a0, a1 = float(a_steps[i]), float(a_steps[i + 1])
-        a_c = 0.5 * (a0 + a1)
-        p = p + kick_factor(a0, a_c, cosmo) * g  # half kick (force at x_i)
-        x = _wrap(x + drift_factor(a0, a1, cosmo) * p, box.box_size)  # drift
+    for i, (k1, dr, k2) in enumerate(_step_coeffs(a_steps, cosmo, integrator)):
+        p = p + k1 * g  # half kick (force at x_i)
+        x = _wrap(x + dr * p, box.box_size)  # drift
         g = force_fn(x)  # force at x_{i+1}
-        p = p + kick_factor(a_c, a1, cosmo) * g  # half kick
+        p = p + k2 * g  # half kick (force at x_{i+1}, reused next step)
         if snapshot is not None:
-            snapshot(i + 1, a1, x, p)
+            snapshot(i + 1, float(a_steps[i + 1]), x, p)
     return x, p
 
 
@@ -194,6 +258,8 @@ def leapfrog(
     snapshot=None,
     compiled=False,
     memory_mode=None,
+    integrator=None,
+    lpt_order=1,
 ):
     """Evolve Zel'dovich initial conditions to z_final with the PM leapfrog.
 
@@ -215,7 +281,11 @@ def leapfrog(
       recompute-away). For an O(1)-in-steps gradient use the reversible adjoint,
       `integrate.adjoint_grad_fnl` -- a separate eager code path, not mx.grad.
     """
-    x0, p0 = initial_state(box, cosmo, time, seed=seed, f_NL=f_NL, backend=backend)
+    if integrator is None:
+        integrator = time.integrator
+    x0, p0 = initial_state(
+        box, cosmo, time, seed=seed, f_NL=f_NL, backend=backend, lpt_order=lpt_order
+    )
     steps = a_grid(time, spacing)
     if memory_mode is None:
         memory_mode = time.memory_mode
@@ -228,28 +298,51 @@ def leapfrog(
     force_fn = FO.make_force_fn(
         box, compiled=compiled, checkpoint=(memory_mode == "checkpoint")
     )
-    return evolve_state(x0, p0, box, cosmo, steps, snapshot=snapshot, force_fn=force_fn)
+    return evolve_state(
+        x0,
+        p0,
+        box,
+        cosmo,
+        steps,
+        snapshot=snapshot,
+        force_fn=force_fn,
+        integrator=integrator,
+    )
 
 
-def _step_coeffs(a_steps, cosmo):
-    """Per-step leapfrog coefficients (k1, drift, k2) for each KDK sub-interval.
+def _step_coeffs(a_steps, cosmo, integrator="exact"):
+    """Per-step KDK coefficients (k1, drift, k2) for each sub-interval.
 
     k1 kicks over [a0, a_mid], drift translates over [a0, a1], k2 kicks over
-    [a_mid, a1] -- the float64-CPU background integrals, constants of the step.
-    Precomputed once so the forward stepper and the adjoint use identical
-    numbers.
+    [a_mid, a1] -- float64-CPU constants of the step. Precomputed once so the
+    forward stepper and the adjoint use identical numbers. `integrator` selects
+    "exact" (literal background integrals) or "fastpm" (growth-corrected kernels
+    that make a linear mode exact at any step count). For FastPM the reference
+    scale a_r is the force-evaluation time for the kicks (a0 for the first half
+    kick, a1 for the second) and the midpoint a_c for the drift.
     """
     co = []
     for i in range(len(a_steps) - 1):
         a0, a1 = float(a_steps[i]), float(a_steps[i + 1])
         a_c = 0.5 * (a0 + a1)
-        co.append(
-            (
-                kick_factor(a0, a_c, cosmo),
-                drift_factor(a0, a1, cosmo),
-                kick_factor(a_c, a1, cosmo),
+        if integrator == "exact":
+            co.append(
+                (
+                    kick_factor(a0, a_c, cosmo),
+                    drift_factor(a0, a1, cosmo),
+                    kick_factor(a_c, a1, cosmo),
+                )
             )
-        )
+        elif integrator == "fastpm":
+            co.append(
+                (
+                    fastpm_kick_factor(a0, a_c, a0, cosmo),
+                    fastpm_drift_factor(a0, a1, a_c, cosmo),
+                    fastpm_kick_factor(a_c, a1, a1, cosmo),
+                )
+            )
+        else:
+            raise ValueError(f"unknown integrator {integrator!r}")
     return co
 
 
@@ -280,7 +373,7 @@ def _make_steppers(box, force_fn):
     return one_step, reverse_step
 
 
-def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None):
+def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None, integrator="exact"):
     """Forward leapfrog evaluated step by step, keeping only the final state.
 
     Materializes (mx.eval) and releases each step, so it runs in O(1) memory in
@@ -292,7 +385,7 @@ def evolve_eager(x, p, box, cosmo, a_steps, force_fn=None):
     if force_fn is None:
         force_fn = FO.make_force_fn(box)
     one_step, _ = _make_steppers(box, force_fn)
-    for k1, dr, k2 in _step_coeffs(a_steps, cosmo):
+    for k1, dr, k2 in _step_coeffs(a_steps, cosmo, integrator):
         x, p = one_step(x, p, k1, dr, k2)
         mx.eval(x, p)
     return x, p
@@ -308,6 +401,8 @@ def adjoint_grad_fnl(
     backend="camb",
     spacing="linear",
     compiled=False,
+    integrator=None,
+    lpt_order=1,
 ):
     """Gradient d loss_field(x_final) / d f_NL via the reversible-leapfrog adjoint.
 
@@ -341,13 +436,17 @@ def adjoint_grad_fnl(
     """
     if not isinstance(f_NL, mx.array):
         f_NL = mx.array(f_NL)
+    if integrator is None:
+        integrator = time.integrator
     a_steps = a_grid(time, spacing)
-    co = _step_coeffs(a_steps, cosmo)
+    co = _step_coeffs(a_steps, cosmo, integrator)
     force_fn = FO.make_force_fn(box, compiled=compiled)
     one_step, reverse_step = _make_steppers(box, force_fn)
 
     def ic_fn(f):
-        x0, p0 = initial_state(box, cosmo, time, seed=seed, f_NL=f, backend=backend)
+        x0, p0 = initial_state(
+            box, cosmo, time, seed=seed, f_NL=f, backend=backend, lpt_order=lpt_order
+        )
         return [x0, p0]
 
     # 1-2. IC, then eager forward keeping only the final state.

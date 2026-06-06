@@ -320,3 +320,106 @@ def test_adjoint_grad_matches_replay():
     )
     assert abs(g_replay) > 0.0
     assert abs(g_adjoint - g_replay) / abs(g_replay) < 1e-3
+
+
+# --- FastPM growth-corrected integrator ---------------------------------------
+
+
+def test_fastpm_reduces_to_exact_small_step():
+    # In the continuum (tiny-step) limit the FastPM kernels must reproduce the
+    # literal background integrals -- a sanity check on the kernels and the
+    # numerical g_f derivative.
+    a0, a1 = 0.30, 0.30 + 1e-5
+    a_c = 0.5 * (a0 + a1)
+    assert (
+        abs(
+            IG.fastpm_kick_factor(a0, a1, a_c, COSMO) / IG.kick_factor(a0, a1, COSMO)
+            - 1.0
+        )
+        < 1e-6
+    )
+    assert (
+        abs(
+            IG.fastpm_drift_factor(a0, a1, a_c, COSMO) / IG.drift_factor(a0, a1, COSMO)
+            - 1.0
+        )
+        < 1e-6
+    )
+
+
+def _grow_linear_mode(integrator, n_steps, z_init=9.0):
+    # Toy single-mode integrator: a linear mode has geometric acceleration equal
+    # to its displacement amplitude (both track D(a)), so the KDK coefficients
+    # alone determine the growth. Returns the final displacement amplitude.
+    a = IG.a_grid(TimeStepping(z_init=z_init, z_final=0.0, n_steps=n_steps))
+    ai = float(a[0])
+    Di = C.growth_factor(z_init, COSMO)
+    x = Di
+    p = ai**2 * float(IG._E_of_a(ai, COSMO)) * Di * C.growth_rate(z_init, COSMO)
+    for k1, dr, k2 in IG._step_coeffs(a, COSMO, integrator):
+        p = p + k1 * x  # g = x (force at the start position)
+        x = x + dr * p
+        p = p + k2 * x  # g = x (force at the end position)
+    return x
+
+
+def test_fastpm_linear_mode_exact_growth():
+    # The defining FastPM property: a single linear mode grows as D(a) EXACTLY at
+    # any step count, while the exact-background leapfrog has a step-count deficit.
+    Di = C.growth_factor(9.0, COSMO)
+    target = C.growth_factor(0.0, COSMO) / Di  # D(z=0) / D(z_init)
+    for n in (2, 4, 8):
+        assert abs(_grow_linear_mode("fastpm", n) / Di / target - 1.0) < 1e-4
+    # the exact integrator is off by > 2% at low step count
+    assert abs(_grow_linear_mode("exact", 2) / Di / target - 1.0) > 0.02
+
+
+def test_exact_path_unchanged_by_refactor():
+    # The "exact" integrator must still produce the literal kick_factor /
+    # drift_factor KDK, unchanged by the integrator refactor (to the scatter-add
+    # floor, since the two paths re-evaluate the force independently).
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=4)
+    x0, p0 = IG.initial_state(SMALL, COSMO, t, seed=0)
+    ag = IG.a_grid(t)
+    xr, _ = IG.evolve_state(x0, p0, SMALL, COSMO, ag, integrator="exact")
+
+    ff = FO.make_force_fn(SMALL)
+    x, p = x0, p0
+    g = ff(x)
+    for i in range(len(ag) - 1):
+        a0, a1 = float(ag[i]), float(ag[i + 1])
+        a_c = 0.5 * (a0 + a1)
+        p = p + IG.kick_factor(a0, a_c, COSMO) * g
+        x = IG._wrap(x + IG.drift_factor(a0, a1, COSMO) * p, SMALL.box_size)
+        g = ff(x)
+        p = p + IG.kick_factor(a_c, a1, COSMO) * g
+    mx.eval(xr, x)
+    assert float(mx.max(mx.abs(xr - x))) < 1e-3 * SMALL.cell_size
+
+
+def test_fastpm_adjoint_matches_replay():
+    # FastPM coefficients are constants of the step, so mx.grad (replay) and the
+    # reversible adjoint must agree under integrator="fastpm" too.
+    box, t, _, loss_field = _adjoint_setup()
+
+    def replay_loss(f):
+        x, _ = IG.leapfrog(
+            box, COSMO, t, seed=0, f_NL=f, backend="eh98", integrator="fastpm"
+        )
+        return loss_field(x)
+
+    g_replay = float(mx.grad(replay_loss)(mx.array(50.0)))
+    g_adjoint = float(
+        IG.adjoint_grad_fnl(
+            loss_field,
+            box,
+            COSMO,
+            t,
+            seed=0,
+            f_NL=50.0,
+            backend="eh98",
+            integrator="fastpm",
+        )
+    )
+    assert abs(g_replay) > 0.0
+    assert abs(g_adjoint - g_replay) / abs(g_replay) < 1e-3

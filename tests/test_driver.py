@@ -52,9 +52,25 @@ def test_run_matches_loose_leapfrog():
 
 
 def test_run_rejects_unimplemented_integrator():
-    cfg = SimConfig(time=TimeStepping(integrator="fastpm"))
+    cfg = SimConfig(time=TimeStepping(integrator="bullfrog"))
     with pytest.raises(NotImplementedError):
         mbody.run(cfg, backend="eh98")
+
+
+def test_run_supports_fastpm():
+    # integrator="fastpm" now runs and, at low step count, evolves differently
+    # from the exact-background leapfrog (FastPM removes the growth deficit).
+    box = BoxConfig(box_size=256.0, n_mesh=32, n_particles=32)
+    t_args = dict(z_init=9.0, z_final=0.0, n_steps=3)
+    exact = mbody.run(
+        SimConfig(box=box, time=TimeStepping(integrator="exact", **t_args)),
+        backend="eh98",
+    )
+    fast = mbody.run(
+        SimConfig(box=box, time=TimeStepping(integrator="fastpm", **t_args)),
+        backend="eh98",
+    )
+    assert not np.allclose(np.asarray(exact.x), np.asarray(fast.x))
 
 
 def test_run_supports_2lpt():

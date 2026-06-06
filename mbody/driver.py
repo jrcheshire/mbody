@@ -31,11 +31,12 @@ from mbody.diagnostics import SnapshotRecorder, cross_correlation, particle_powe
 
 def _check_supported(cfg):
     """Reject SimConfig options that are reserved in the enums but not built."""
-    if cfg.time.integrator != "exact":
+    if cfg.time.integrator not in ("exact", "fastpm"):
         raise NotImplementedError(
             f"integrator={cfg.time.integrator!r} is reserved in the config but "
-            "not implemented; only 'exact' (exact-background leapfrog) runs. "
-            "FastPM / BullFrog kernels are a roadmap Stretch item."
+            "not implemented; only 'exact' (exact-background leapfrog) and "
+            "'fastpm' (growth-corrected kernels) run. BullFrog is a roadmap "
+            "Stretch item."
         )
 
 
@@ -139,7 +140,9 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         lpt_order=ic.lpt_order,
     )
     steps = IG.a_grid(time, spacing)
-    xf, pf = IG.evolve_state(x0, p0, box, cosmo, steps, snapshot=recorder)
+    xf, pf = IG.evolve_state(
+        x0, p0, box, cosmo, steps, snapshot=recorder, integrator=time.integrator
+    )
 
     ic_field = PA.density_contrast(x0, box)
     final_field = PA.density_contrast(xf, box)
