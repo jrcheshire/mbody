@@ -262,6 +262,38 @@ class Tracer:
 
 
 @dataclass(frozen=True)
+class RedshiftSpace:
+    """Redshift-space distortion settings for the measured field (opt-in).
+
+    When enabled, the driver maps the final particles to redshift space -- a
+    line-of-sight peculiar-velocity shift (mbody.rsd) -- before measuring, so the
+    run exposes the anisotropic multipoles P_0/P_2 (mbody.fields.power_multipoles).
+    Off by default: the honest-config invariant means a plain run measures the
+    real-space field; redshift space is something you ask for.
+
+    Parameters
+    ----------
+    enabled : apply the redshift-space map before measuring.
+    los_axis : line-of-sight axis. Use a full fft axis (0 or 1); the rfft axis 2
+        skews the discrete multipole average (see fields._mu_grid).
+    f_growth : growth-rate amplitude multiplying the RSD shift. 1 = the
+        simulation's own peculiar velocities (the physical value); it is a
+        differentiable growth-rate proxy in the Fisher, the RSD analog of the
+        linear amplitude A.
+    """
+
+    enabled: bool = False
+    los_axis: int = 0
+    f_growth: float = 1.0
+
+    def __post_init__(self):
+        if self.los_axis not in (0, 1, 2):
+            raise ValueError(f"los_axis must be 0, 1 or 2 (got {self.los_axis})")
+        if self.f_growth < 0.0:
+            raise ValueError(f"f_growth must be non-negative (got {self.f_growth})")
+
+
+@dataclass(frozen=True)
 class SimConfig:
     """Top-level configuration aggregating the sub-configs.
 
@@ -283,11 +315,12 @@ class SimConfig:
     time: TimeStepping = field(default_factory=TimeStepping)
     ic: InitialConditions = field(default_factory=InitialConditions)
     tracer: Tracer = field(default_factory=Tracer)
+    rsd: RedshiftSpace = field(default_factory=RedshiftSpace)
 
     def summary(self):
         """Human-readable one-screen summary, handy in scripts and logs."""
         c, b, t = self.cosmology, self.box, self.time
-        tr = self.tracer
+        tr, rs = self.tracer, self.rsd
         return (
             "M-body SimConfig\n"
             f"  cosmology: Omega_m={c.Omega_m} Omega_b={c.Omega_b} h={c.h} "
@@ -301,5 +334,7 @@ class SimConfig:
             f"({t.integrator}, {t.memory_mode})\n"
             f"  ic:        kind={self.ic.kind} f_NL={self.ic.f_NL} "
             f"lpt_order={self.ic.lpt_order} seed={self.ic.seed}\n"
-            f"  tracer:    b1={tr.b1} b2={tr.b2} A={tr.A}"
+            f"  tracer:    b1={tr.b1} b2={tr.b2} A={tr.A}\n"
+            f"  rsd:       enabled={rs.enabled} los_axis={rs.los_axis} "
+            f"f_growth={rs.f_growth}"
         )

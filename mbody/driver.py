@@ -24,8 +24,10 @@ import os
 
 import numpy as np
 
+from mbody import fields as F
 from mbody import integrate as IG
 from mbody import painting as PA
+from mbody import rsd as RS
 from mbody.diagnostics import SnapshotRecorder, cross_correlation, particle_power
 
 
@@ -62,10 +64,33 @@ class RunResult:
     final_field: object
     backend: str
     recorder: object = None
+    redshift_field: object = None
 
     def power(self, **kwargs):
         """Measured P(k) of the final field (k_centers, P_k, n_modes)."""
         return particle_power(self.x, self.config.box, **kwargs)
+
+    def power_multipoles(self, ells=(0, 2), **kwargs):
+        """Redshift-space multipoles P_ell(k) of the final field.
+
+        Requires the run to have been made with cfg.rsd.enabled (so the
+        redshift-space, interlaced density field is available). Returns
+        (k_centers, {ell: P_ell}, n_modes); the CIC window is deconvolved and the
+        discrete-shell mode-coupling decoupled. Extra keywords pass through to
+        fields.power_multipoles (dk, kmax, ...).
+        """
+        if self.redshift_field is None:
+            raise ValueError(
+                "no redshift-space field; run with cfg.rsd = RedshiftSpace(enabled=True)"
+            )
+        return F.power_multipoles(
+            self.redshift_field,
+            self.config.box,
+            ells=ells,
+            los_axis=self.config.rsd.los_axis,
+            deconvolve_cic=True,
+            **kwargs,
+        )
 
     def cross_with_ic(self, **kwargs):
         """Cross-correlation r(k) of the final field with the linear IC."""
@@ -112,6 +137,11 @@ class RunResult:
         np.save(os.path.join(path, "p_final.npy"), np.asarray(self.p))
         np.save(os.path.join(path, "ic_field.npy"), np.asarray(self.ic_field))
         np.save(os.path.join(path, "final_field.npy"), np.asarray(self.final_field))
+        if self.redshift_field is not None:
+            np.save(
+                os.path.join(path, "redshift_field.npy"),
+                np.asarray(self.redshift_field),
+            )
         if dashboard:
             self.dashboard(out=os.path.join(path, "dashboard.png"))
         return path
@@ -126,7 +156,9 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
     or "eh98"). Set `record=True` (or pass a `recorder`) to capture the
     trajectory for the growth history and the structure-formation animation --
     this is off the autodiff path and costs a little memory per step, so it is
-    off by default.
+    off by default. If cfg.rsd.enabled, the final particles are also mapped to
+    redshift space and painted (with interlacing) into RunResult.redshift_field,
+    so result.power_multipoles() returns the anisotropic P_0/P_2.
     """
     _check_supported(cfg)
     box, cosmo, time, ic = cfg.box, cfg.cosmology, cfg.time, cfg.ic
@@ -150,6 +182,20 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
 
     ic_field = PA.density_contrast(x0, box)
     final_field = PA.density_contrast(xf, box)
+
+    redshift_field = None
+    if cfg.rsd.enabled:
+        s = RS.redshift_space_positions(
+            xf,
+            pf,
+            box,
+            cosmo,
+            z=time.z_final,
+            los_axis=cfg.rsd.los_axis,
+            f_growth=cfg.rsd.f_growth,
+        )
+        redshift_field = F.interlaced_density_contrast(s, box)
+
     return RunResult(
         config=cfg,
         x=xf,
@@ -158,4 +204,5 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         final_field=final_field,
         backend=backend,
         recorder=recorder,
+        redshift_field=redshift_field,
     )
