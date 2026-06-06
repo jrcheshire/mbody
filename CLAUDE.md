@@ -93,10 +93,14 @@ tests/      unit + smoke tests
   `animate_slab`, six-panel `dashboard`). It is intentionally NOT imported by
   `mbody.__init__`, so `import mbody` stays plotting-free / off the hot path --
   import `mbody.viz` explicitly in scripts.
-- **Honest-config invariant:** SimConfig defaults name only implemented physics
-  (`integrator="exact"`, `lpt_order=1`); `fastpm` / `bullfrog` / `lpt_order=2`
-  are reserved enum values that `run()` rejects with `NotImplementedError`. When
-  adding an integrator or LPT order, implement it before flipping the default.
+- **Honest-config invariant:** SimConfig defaults name only implemented physics.
+  Currently `integrator="fastpm"` (growth-corrected kick/drift, exact linear
+  growth at any step count) and `lpt_order=2` (2LPT); `"exact"` and `lpt_order=1`
+  are the simpler implemented alternatives. `"bullfrog"` is the one reserved enum
+  value `run()` still rejects with `NotImplementedError`. When adding an
+  integrator or LPT order, implement + validate it before making it the default.
+  NB `integrate.leapfrog` / `initial_state` keep their own `lpt_order=1` default
+  (loose API); the fastpm+2LPT defaults live in SimConfig (the driver path).
 
 ## Key references
 

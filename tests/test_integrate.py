@@ -155,7 +155,10 @@ def test_linear_growth_converges_to_D():
     mask = (kmag > 0) & (kmag < 0.04)
 
     def growth_estimate(n_steps):
-        t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=n_steps)
+        # Explicitly the exact-background integrator: this test is about ITS
+        # convergence to D as steps rise (the deficit FastPM removes). FastPM is
+        # checked to be exact at any step count in test_fastpm_linear_mode_*.
+        t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=n_steps, integrator="exact")
         x0, _ = IG.initial_state(box, COSMO, t, seed=0)
         d_i = np.asarray(mx.fft.rfftn(PA.density_contrast(x0, box)))
         xf, _ = IG.leapfrog(box, COSMO, t, seed=0)

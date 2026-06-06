@@ -35,16 +35,32 @@ def _cfg(**ic_kwargs):
 
 def test_config_defaults_are_implemented():
     # The honest-config invariant: SimConfig() defaults name only built physics.
+    # After FastPM + 2LPT landed, the defaults are the better physics and run().
     cfg = SimConfig()
-    assert cfg.time.integrator == "exact"
-    assert cfg.ic.lpt_order == 1
+    assert cfg.time.integrator == "fastpm"
+    assert cfg.ic.lpt_order == 2
+    # the default physics (fastpm + 2LPT) runs out of the box -- small box here
+    # only for test speed.
+    small = SimConfig(
+        box=BoxConfig(box_size=200.0, n_mesh=16, n_particles=16),
+        time=TimeStepping(n_steps=3),
+    )
+    mbody.run(small, backend="eh98")
 
 
 def test_run_matches_loose_leapfrog():
     cfg = _cfg(seed=7)
     res = mbody.run(cfg, backend="eh98")
-    # Same seed/box/time through the loose API must give the same final state.
-    xf, _ = IG.leapfrog(cfg.box, cfg.cosmology, cfg.time, seed=7, backend="eh98")
+    # Same seed/box/time/order through the loose API must give the same final
+    # state (leapfrog's own lpt_order default is 1, so pass the config's).
+    xf, _ = IG.leapfrog(
+        cfg.box,
+        cfg.cosmology,
+        cfg.time,
+        seed=7,
+        backend="eh98",
+        lpt_order=cfg.ic.lpt_order,
+    )
     assert np.allclose(np.asarray(res.x), np.asarray(xf), atol=1e-4)
     # The stored final field is the CIC density of those positions.
     fld = PA.density_contrast(xf, cfg.box)

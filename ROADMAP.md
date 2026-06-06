@@ -53,8 +53,10 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
 - Validated: the identity `div Psi_1 = -delta` holds on all resolved Fourier
   modes (<1e-4; the only residual is the Nyquist-plane spectral-gradient
   ambiguity). Structure-formation figure + animation under `outputs/`.
-- TODO: 2LPT; velocities (deferred to the integrator); and -- once CIC painting
-  exists -- the displaced-density cross-correlation / P(k) recovery check.
+- DONE: 2LPT (`lpt.second_order_displacement`, sourced by `lpt2_source`;
+  `div Psi_2 = -delta_2` on resolved modes); velocities (in the integrator);
+  displaced-density P(k) recovery (Step 3). The 2LPT IC carries the correct
+  positive (gravitational) skewness the Zel'dovich field lacks.
 
 ## Step 3 -- PM force solve + leapfrog  [done]
 
@@ -88,9 +90,12 @@ through `mx.scatter` / `array.at[idx].add(...)` before relying on it in step 3.
   round-off only, not bit-exact (GPU scatter-add is nondeterministic).
   `scripts/animate_pm.py` (structure-formation gif via snapshot) and
   `scripts/plot_growth.py` (P(k) + D(a) validation figure).
-- NEXT (stage 2, parked in Stretch): FastPM growth-corrected kick/drift kernels
-  (Feng et al. 2016) to reproduce linear growth at very low step count, checked
-  against this exact-background baseline.
+- DONE (stage 2): FastPM growth-corrected kick/drift kernels (Feng et al. 2016,
+  `integrate.fastpm_kick_factor` / `fastpm_drift_factor`, selected by
+  `integrator="fastpm"`) -- a single linear mode grows as `D(a)` exactly at any
+  step count (validated to <1e-4 at 2-8 steps), where the exact-background
+  leapfrog is off by 2-8%. The kernels are constants of the step, so `mx.grad`
+  and the reversible adjoint extend unchanged.
 
 ## Step 4 -- local f_NL initial conditions  [done]
 
@@ -173,12 +178,12 @@ driver ties the config to it.
   itself (`dashboard`, `save`). `scripts/run_demo.py` is the headline; the inline
   growth / animation in `plot_growth.py` and `animate_pm.py` now comes from this
   shared layer.
-- Honest config: SimConfig defaults were corrected to name only built physics --
-  `integrator="exact"` (the implemented exact-background leapfrog) and
-  `lpt_order=1` (Zel'dovich), so `SimConfig()` runs out of the box. The reserved
-  names (`fastpm` / `bullfrog`, `lpt_order=2`) stay in the enums, but `run()`
-  raises `NotImplementedError` on them rather than silently substituting. Flip a
-  default only when that physics is actually implemented.
+- Honest config: SimConfig defaults name only built physics. With FastPM + 2LPT
+  now implemented (Steps 2/3), the defaults are `integrator="fastpm"` and
+  `lpt_order=2` (the better physics, validated); `"exact"` and `lpt_order=1`
+  remain available, and `"bullfrog"` is the one reserved name `run()` still
+  rejects with `NotImplementedError`. `scripts/compare_integrators.py` shows the
+  payoff (exact-vs-fastpm growth accuracy, ZA-vs-2LPT skewness).
 
 ## Stretch
 
@@ -194,7 +199,8 @@ driver ties the config to it.
   compute, grad matching replay to ~1e-6. `mx.compile` of the force solve is
   ~1x (FFT-bound). See `scripts/bench_pm.py` and the module docstrings. Next
   here: generalize the adjoint IC step to cosmology params (autodiff Fisher).
-- 2LPT ICs; more steps; convergence study vs a reference (pmwd / analytic).
+- More steps / higher resolution; convergence study vs an external reference
+  (pmwd / analytic). (2LPT ICs and FastPM kernels are now DONE -- Steps 2/3.)
 
 ## Known risks / open questions
 

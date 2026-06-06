@@ -151,12 +151,12 @@ class TimeStepping:
     n_steps : number of leapfrog PM steps between them. More steps = more
         accurate growth, but reverse-mode autodiff memory scales with this
         count because the graph unrolls over every step.
-    integrator : time-stepping scheme. "exact" is the implemented baseline --
-        a kick-drift-kick leapfrog whose kick/drift coefficients are exact
-        background integrals. "fastpm" (modified kernels that get linear growth
-        right at low step count) and "bullfrog" (a 2LPT-accurate, time-reversible
-        alternative) are reserved in the enum but not yet implemented; run()
-        raises NotImplementedError on them.
+    integrator : time-stepping scheme. "fastpm" (default) uses growth-corrected
+        kick/drift kernels that get linear growth right at any step count;
+        "exact" is the exact-background-integral KDK leapfrog (a ~2% growth
+        deficit at low step count). Both are implemented. "bullfrog" (a
+        2LPT-accurate, time-reversible alternative) is reserved in the enum but
+        not yet implemented; run() raises NotImplementedError on it.
     memory_mode : autodiff memory strategy. "replay" keeps the full unrolled
         graph; "checkpoint" recomputes each step in the backward pass to save
         memory; "adjoint" reconstructs state by reverse-time integration
@@ -166,7 +166,7 @@ class TimeStepping:
     z_init: float = 9.0
     z_final: float = 0.0
     n_steps: int = 10
-    integrator: str = "exact"
+    integrator: str = "fastpm"
     memory_mode: str = "replay"
 
     _INTEGRATORS = ("exact", "fastpm", "bullfrog")
@@ -203,15 +203,15 @@ class InitialConditions:
         differentiates with respect to.
     seed : RNG seed for the Gaussian random phases (reproducibility).
     lpt_order : Lagrangian perturbation theory order for the initial
-        displacement -- 1 (Zel'dovich, implemented) or 2 (2LPT, more accurate
-        large-scale flows; reserved but not yet implemented, run() raises on it).
+        displacement -- 2 (2LPT, default; more accurate large-scale flows, curbs
+        the Zel'dovich early-time transient) or 1 (Zel'dovich). Both implemented.
     kind : "gaussian" or "local_fnl". (Redundant with f_NL != 0, but explicit
         so a run's intent is unambiguous.)
     """
 
     f_NL: float = 0.0
     seed: int = 0
-    lpt_order: int = 1
+    lpt_order: int = 2
     kind: str = "gaussian"
 
     _KINDS = ("gaussian", "local_fnl")
