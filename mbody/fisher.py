@@ -710,3 +710,499 @@ def multipole_gaussian_covariance(
         h = (n_mock - n_data - 2) / (n_mock - 1)
         cov = cov / h
     return cov
+
+
+# --- Multi-tracer Fisher (the b_phi-f_NL degeneracy capstone) -----------------
+#
+# Two local-bias tracers A and B painted from the SAME field sample the same
+# modes, so their sample variance is shared: the cross spectrum P_AB and the
+# autos {P_AA, P_BB} together carry differential-bias information cosmic variance
+# cannot wash out (Seljak 2009, arXiv:0807.1770). The multi-tracer constraining
+# power on the local-f_NL scale-dependent bias goes as |b1_B b_phi_A - b1_A
+# b_phi_B| (Barreira & Krause 2023, arXiv:2302.09066): it constrains the PRODUCTS
+# f_NL*b_phi per tracer with NO b_phi prior, and pins f_NL itself only once a
+# b_phi(b1) relation is imposed -- multi-tracer relaxes/robustifies that prior,
+# it does not by itself break the degeneracy.
+#
+# In this toy b_phi is emergent from b2: dlnP_h/df_NL = 4 b2 A sigma^2/(b1 M(k))
+# (bias.scale_dependent_bias_response) equals 2 b_phi/(b1 M(k)), so b_phi =
+# 2 b2 A sigma^2 -- independent of b1. Two regimes are demonstrated:
+#   * FREE: marginalize (b1_i, b2_i) per tracer; only f_NL*b_phi_i is constrained
+#     and sigma(f_NL) blows up (the degeneracy survives, sharpened by the
+#     cancellation of the products).
+#   * TIED: impose universality b_phi = 2 delta_c (b1-1), i.e.
+#     b2_i = delta_c (b1_i-1)/(A sigma^2); now f_NL is constrained and the gain
+#     goes as |b1_A - b1_B| (universality_b2 / universality_tie_matrix).
+#
+# Data vector mu = [P_AA(k), P_AB(k), P_BB(k)] (spectrum-major), RAW linear band
+# powers (the cross P_AB is not positive-definite, so no log) -> a full block
+# COVARIANCE with per-tracer Poisson shot noise (the gain is shot-noise-limited;
+# with noiseless fields the cancellation is formally perfect and the forecast
+# vacuous). The IC params (f_NL, A) share one reversible-adjoint sweep per data
+# component; the four b's are cheap downstream fixed-field gradients.
+
+PARAM_NAMES_MT = ("f_NL", "A", "b1_A", "b2_A", "b1_B", "b2_B")
+
+
+def _multitracer_vector(field_a, field_b, box, k_bins, dk):
+    """[P_AA, P_AB, P_BB] of two real tracer fields, spectrum-major MLX vector."""
+    return mx.concatenate(
+        [
+            F.band_power(field_a, box, k_bins, dk=dk),
+            F.cross_power(field_a, field_b, box, k_bins, dk=dk),
+            F.band_power(field_b, box, k_bins, dk=dk),
+        ]
+    )
+
+
+def linear_multitracer_jacobian(
+    box, cosmo, theta_fid, k_bins, seed=0, dk=None, backend="camb"
+):
+    """d{P_AA,P_AB,P_BB}/dtheta for two LINEAR-field local-bias tracers.
+
+    theta = PARAM_NAMES_MT = (f_NL, A, b1_A, b2_A, b1_B, b2_B). Both tracers are
+    painted from the SAME A*linear_density(f_NL); the data vector is the raw
+    auto/cross band powers (spectrum-major). Built per data component with
+    reverse-mode mx.grad. Returns (J, P_fid): J (3*n_bins, 6) float64, P_fid the
+    (3*n_bins,) fiducial spectra (same layout).
+    """
+    theta = mx.array([float(theta_fid[n]) for n in PARAM_NAMES_MT])
+    n_bins = len(k_bins)
+    n_data = 3 * n_bins
+
+    def model_P(t):
+        f_NL, A, b1A, b2A, b1B, b2B = t[0], t[1], t[2], t[3], t[4], t[5]
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
+        hA = B.local_bias_tracer(delta, b1A, b2A)
+        hB = B.local_bias_tracer(delta, b1B, b2B)
+        return _multitracer_vector(hA, hB, box, k_bins, dk)
+
+    J = np.empty((n_data, len(PARAM_NAMES_MT)), dtype=np.float64)
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: model_P(t)[d])(theta)
+        J[d, :] = np.asarray(g, dtype=np.float64)
+    P_fid = np.asarray(model_P(theta), dtype=np.float64)
+    return J, P_fid
+
+
+def pm_multitracer_jacobian(
+    box,
+    cosmo,
+    time,
+    theta_fid,
+    k_bins,
+    seed=0,
+    dk=None,
+    backend="camb",
+    integrator=None,
+    lpt_order=2,
+):
+    """d{P_AA,P_AB,P_BB}/dtheta for two PM-EVOLVED local-bias tracers.
+
+    Both tracers are painted from the SAME final field (one trajectory). Columns
+    by where each parameter enters, exactly as pm_logP_jacobian:
+
+      * f_NL, A: IC-stage -> the reversible adjoint (adjoint_grad_ic), ONE
+        O(grid)-memory sweep per data component (the loss paints BOTH tracers
+        from the shared final state, so two tracers cost the same one sweep as
+        one). Cost = 3*n_bins sweeps (3x single-tracer; independent of #tracers).
+      * b1_A, b2_A, b1_B, b2_B: downstream -- cheap mx.grad at the stop_gradient'd
+        final density (P_AA depends only on A's bias, P_BB only on B's, P_AB on
+        all four; the zeros fall out).
+
+    Returns (J, P_fid): J (3*n_bins, 6) float64, P_fid the fiducial spectra.
+    """
+    fid = {n: float(theta_fid[n]) for n in PARAM_NAMES_MT}
+    n_bins = len(k_bins)
+    n_data = 3 * n_bins
+    J = np.empty((n_data, len(PARAM_NAMES_MT)), dtype=np.float64)
+
+    # Evolve once at the fiducial; the final density is fixed for the b columns.
+    x_final, _ = IN.leapfrog(
+        box,
+        cosmo,
+        time,
+        seed=seed,
+        f_NL=mx.array(fid["f_NL"]),
+        amplitude=mx.array(fid["A"]),
+        backend=backend,
+        integrator=integrator,
+        lpt_order=lpt_order,
+    )
+    delta_final = mx.stop_gradient(F.interlaced_density_contrast(x_final, box))
+
+    # Downstream b columns: cheap mx.grad at the fixed final field.
+    td = mx.array([fid["b1_A"], fid["b2_A"], fid["b1_B"], fid["b2_B"]])
+
+    def downstream_P(t):
+        hA = B.local_bias_tracer(delta_final, t[0], t[1])
+        hB = B.local_bias_tracer(delta_final, t[2], t[3])
+        return _multitracer_vector(hA, hB, box, k_bins, dk)
+
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: downstream_P(t)[d])(td)
+        J[d, 2] = float(g[0])  # b1_A
+        J[d, 3] = float(g[1])  # b2_A
+        J[d, 4] = float(g[2])  # b1_B
+        J[d, 5] = float(g[3])  # b2_B
+    P_fid = np.asarray(downstream_P(td), dtype=np.float64)
+
+    # IC columns f_NL, A: the shared trajectory adjoint, one sweep per component.
+    def make_loss(d):
+        def loss_field(x):
+            field = F.interlaced_density_contrast(x, box)
+            hA = B.local_bias_tracer(field, fid["b1_A"], fid["b2_A"])
+            hB = B.local_bias_tracer(field, fid["b1_B"], fid["b2_B"])
+            return _multitracer_vector(hA, hB, box, k_bins, dk)[d]
+
+        return loss_field
+
+    for d in range(n_data):
+        g_ic = IN.adjoint_grad_ic(
+            make_loss(d),
+            box,
+            cosmo,
+            time,
+            seed=seed,
+            f_NL=fid["f_NL"],
+            amplitude=fid["A"],
+            backend=backend,
+            integrator=integrator,
+            lpt_order=lpt_order,
+        )
+        J[d, 0] = float(g_ic[0])  # f_NL
+        J[d, 1] = float(g_ic[1])  # A
+    return J, P_fid
+
+
+def multitracer_analytic_covariance(box, k_bins, P_AA, P_AB, P_BB, n_A, n_B, dk=None):
+    """Analytic Gaussian block covariance of [P_AA, P_AB, P_BB] with shot noise.
+
+    The disconnected (Gaussian) covariance is
+
+        Cov(P_ij, P_kl) = (Ptot_ik Ptot_jl + Ptot_il Ptot_jk) / N_modes,
+
+    with Ptot_ii = P_ii + 1/n_i (auto spectra carry Poisson shot noise; the cross
+    does not, for independent populations) and the effective mode count
+    N_modes = 2 / Var[ln P_b] (band_power_log_variance, which carries the rfft
+    half-grid plane double-count). Returns (3*n_bins, 3*n_bins) float64,
+    spectrum-major, block-diagonal in k (Gaussian modes in different shells are
+    independent). P_AA/P_AB/P_BB are the fiducial signal band powers (n_bins,);
+    n_A/n_B are number densities (per (Mpc/h)^3, so 1/n is a power). This is the
+    clean Gaussian approximation; multitracer_gaussian_covariance is the mock
+    ground truth it is validated against.
+    """
+    P_AA = np.asarray(P_AA, dtype=np.float64)
+    P_AB = np.asarray(P_AB, dtype=np.float64)
+    P_BB = np.asarray(P_BB, dtype=np.float64)
+    n_bins = len(k_bins)
+    nmodes = 2.0 / band_power_log_variance(box, k_bins, dk=dk)
+    tA = P_AA + 1.0 / float(n_A)
+    tB = P_BB + 1.0 / float(n_B)
+    x = P_AB
+    cov = np.zeros((3 * n_bins, 3 * n_bins), dtype=np.float64)
+    for b in range(n_bins):
+        blk = (
+            np.array(
+                [
+                    [2 * tA[b] ** 2, 2 * tA[b] * x[b], 2 * x[b] ** 2],
+                    [2 * tA[b] * x[b], tA[b] * tB[b] + x[b] ** 2, 2 * tB[b] * x[b]],
+                    [2 * x[b] ** 2, 2 * tB[b] * x[b], 2 * tB[b] ** 2],
+                ]
+            )
+            / nmodes[b]
+        )
+        idx = [b, n_bins + b, 2 * n_bins + b]
+        cov[np.ix_(idx, idx)] = blk
+    return cov
+
+
+def _mt_mock_covariance(paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap):
+    """Mock covariance of [P_AA, P_AB, P_BB] for a tracer-pair painter.
+
+    paint(seed) -> (hA, hB), the two real tracer fields for one realization.
+    Optionally adds independent white shot noise to each (band power 1/n_i, the
+    Poisson level for number density n_i per (Mpc/h)^3 -- cross spectra get none).
+    Returns the (3*n_bins, spectrum-major) sample covariance, Hartlap-corrected
+    when hartlap=True.
+    """
+    N, V = box.n_mesh, box.box_size**3
+    # real-space white-noise rms whose band power is 1/n_i (Poisson shot level)
+    sigA = float(np.sqrt(N**3 / (float(n_A) * V)))
+    sigB = float(np.sqrt(N**3 / (float(n_B) * V)))
+    n_data = 3 * len(k_bins)
+    data = np.empty((n_mock, n_data), dtype=np.float64)
+    for m in range(n_mock):
+        hA, hB = paint(seed0 + m)
+        if shot:
+            kA, kB = mx.random.split(mx.random.key(7_000_003 + seed0 + m))
+            hA = hA + sigA * mx.random.normal((N, N, N), key=kA)
+            hB = hB + sigB * mx.random.normal((N, N, N), key=kB)
+        data[m, :] = np.asarray(
+            _multitracer_vector(hA, hB, box, k_bins, dk), dtype=np.float64
+        )
+    cov = np.cov(data, rowvar=False)
+    if hartlap:
+        h = (n_mock - n_data - 2) / (n_mock - 1)
+        cov = cov / h
+    return cov
+
+
+def multitracer_gaussian_covariance(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    n_A,
+    n_B,
+    n_mock=400,
+    seed0=2000,
+    dk=None,
+    backend="camb",
+    hartlap=True,
+    shot=True,
+):
+    """Mock Gaussian covariance of [P_AA, P_AB, P_BB] with per-tracer shot noise.
+
+    Generates n_mock Gaussian realizations of the two linear-field local-bias
+    tracers at the fiducial parameters, optionally adds independent white shot
+    noise to each, measures the raw auto/cross band powers, and returns their
+    sample covariance (3*n_bins, spectrum-major). This is the ground-truth
+    forecast covariance -- it captures the cross-spectrum mode statistics and the
+    weak b2 non-Gaussianity exactly; multitracer_analytic_covariance is the clean
+    Gaussian approximation validated against it. Hartlap-corrected when
+    hartlap=True.
+    """
+    fnl, A = float(theta_fid["f_NL"]), float(theta_fid["A"])
+    b1A, b2A = float(theta_fid["b1_A"]), float(theta_fid["b2_A"])
+    b1B, b2B = float(theta_fid["b1_B"]), float(theta_fid["b2_B"])
+
+    def paint(seed):
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=fnl, backend=backend)
+        return B.local_bias_tracer(delta, b1A, b2A), B.local_bias_tracer(
+            delta, b1B, b2B
+        )
+
+    return _mt_mock_covariance(
+        paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap
+    )
+
+
+def universality_b2(b1, box, cosmo, A=1.0, delta_c=1.686, z=0.0, backend="camb"):
+    """b2 making the toy's b_phi follow the universality relation b_phi =
+    2 delta_c (b1 - 1).
+
+    The toy's emergent b_phi = 2 b2 A sigma^2 (from dlnP_h/df_NL = 4 b2 A sigma^2
+    / (b1 M) = 2 b_phi/(b1 M)), so universality is b2 = delta_c (b1 - 1)/
+    (A sigma^2), sigma^2 = bias.mesh_variance. Returns a float.
+    """
+    sigma2 = B.mesh_variance(box, cosmo, z=z, backend=backend)
+    return float(delta_c * (float(b1) - 1.0) / (float(A) * sigma2))
+
+
+def universality_fiducial(
+    f_NL, A, b1_A, b1_B, box, cosmo, delta_c=1.686, z=0.0, backend="camb"
+):
+    """Free-basis fiducial dict with b2_i set to the universality value.
+
+    A J_full built at this fiducial is consistent with the linearization in
+    universality_tie_matrix, so J_tied = J_full @ T is exact at the fiducial.
+    """
+    sigma2 = B.mesh_variance(box, cosmo, z=z, backend=backend)
+    c = delta_c / (float(A) * sigma2)
+    return {
+        "f_NL": f_NL,
+        "A": A,
+        "b1_A": b1_A,
+        "b2_A": float(c * (float(b1_A) - 1.0)),
+        "b1_B": b1_B,
+        "b2_B": float(c * (float(b1_B) - 1.0)),
+    }
+
+
+def universality_tie_matrix(
+    theta_fid, box, cosmo, delta_c=1.686, z=0.0, backend="camb"
+):
+    """Constant chain-rule map T (6x4) from the free MT basis to the tied basis.
+
+    Enforces b2_i = delta_c (b1_i-1)/(A sigma^2), so b_phi_i = 2 delta_c (b1_i-1);
+    the tied basis is (f_NL, A, b1_A, b1_B). J_tied = J_full @ T, exact only when
+    J_full is built at a universality-consistent fiducial (universality_fiducial).
+    Returns (T, tied_names, tied_fiducial).
+    """
+    A = float(theta_fid["A"])
+    b1A = float(theta_fid["b1_A"])
+    b1B = float(theta_fid["b1_B"])
+    sigma2 = B.mesh_variance(box, cosmo, z=z, backend=backend)
+    db2_db1 = delta_c / (A * sigma2)
+    db2A_dA = -delta_c * (b1A - 1.0) / (A**2 * sigma2)
+    db2B_dA = -delta_c * (b1B - 1.0) / (A**2 * sigma2)
+    T = np.zeros((6, 4), dtype=np.float64)
+    T[0, 0] = 1.0  # f_NL -> f_NL
+    T[1, 1] = 1.0  # A -> A (direct)
+    T[2, 2] = 1.0  # b1_A -> b1_A (direct)
+    T[4, 3] = 1.0  # b1_B -> b1_B (direct)
+    T[3, 1] = db2A_dA  # b2_A <- A
+    T[3, 2] = db2_db1  # b2_A <- b1_A
+    T[5, 1] = db2B_dA  # b2_B <- A
+    T[5, 3] = db2_db1  # b2_B <- b1_B
+    tied_names = ("f_NL", "A", "b1_A", "b1_B")
+    tied_fid = {"f_NL": float(theta_fid["f_NL"]), "A": A, "b1_A": b1A, "b1_B": b1B}
+    return T, tied_names, tied_fid
+
+
+def multitracer_forecast(
+    J, cov, fiducial, param_names=PARAM_NAMES_MT, priors=None, tie=None
+):
+    """Assemble a multi-tracer FisherForecast, optionally universality-tied.
+
+    With tie=None the FREE forecast over `param_names` is returned. To impose the
+    universality relation pass `tie` = the (T, tied_names, tied_fiducial) tuple
+    from universality_tie_matrix (native b2 tracer) or universality_bphi_tie_matrix
+    (explicit-b_phi tracer); then J_tied = J @ T and the forecast is over the tied
+    basis. The covariance is identical free or tied (the tie reparametrizes the
+    signal, not the data). J must have been built at a universality-consistent
+    fiducial (universality_fiducial / universality_bphi_fiducial) for the tie to
+    be exact.
+    """
+    if tie is None:
+        return FisherForecast(
+            J,
+            covariance=cov,
+            fiducial_params=fiducial,
+            param_names=param_names,
+            priors=priors,
+        )
+    T, tied_names, tied_fid = tie
+    return FisherForecast(
+        np.asarray(J, dtype=np.float64) @ T,
+        covariance=cov,
+        fiducial_params=tied_fid,
+        param_names=tied_names,
+        priors=priors,
+    )
+
+
+# --- Explicit-b_phi multi-tracer (the clean all-k degeneracy) ------------------
+#
+# The native (b2-sourced) tracer reproduces the b_phi-f_NL degeneracy only at low
+# k -- at high k the b2 broadband loop self-calibrates b_phi (an artifact the real
+# b_phi lacks). bias.scale_dependent_bias_tracer makes b_phi an EXPLICIT parameter
+# entering ONLY as the k^-2 scale-dependent bias delta_h(k) = [b1 + b_phi f_NL/
+# M(k)] delta(k), on a GAUSSIAN field. Then d/df_NL and d/db_phi share the 1/M(k)
+# shape and are PERFECTLY degenerate (the product f_NL*b_phi) at all k -- the
+# faithful Barreira/Dalal degeneracy, invisible at f_NL=0 (the cross-term vanishes)
+# and sharpest at f_NL ~ sigma(f_NL). Universality is the clean b_phi=2 delta_c
+# (b1-1) (no mesh sigma^2). The forecast is linear-field only: the degeneracy is a
+# large-scale linear-bias statement that the PM evolution does not change (the PM
+# autodiff showcase is the native model's job).
+
+PARAM_NAMES_MT_BPHI = ("f_NL", "A", "b1_A", "bphi_A", "b1_B", "bphi_B")
+
+
+def _inv_M_grid(box, cosmo, z=0.0, backend="camb"):
+    """1/M(k) on the rfft half-grid (k=0 -> 0), the scale-dependent-bias kernel."""
+    _, _, k_mag = F.k_grid(box)
+    M = IC.poisson_M(np.where(k_mag > 0, k_mag, 1.0), cosmo, z=z, backend=backend)
+    return np.where(k_mag > 0, 1.0 / M, 0.0).astype(np.float32)
+
+
+def linear_multitracer_bphi_jacobian(
+    box, cosmo, theta_fid, k_bins, seed=0, dk=None, backend="camb"
+):
+    """d{P_AA,P_AB,P_BB}/dtheta for two EXPLICIT-b_phi scale-dependent-bias tracers.
+
+    theta = PARAM_NAMES_MT_BPHI = (f_NL, A, b1_A, bphi_A, b1_B, bphi_B). Both
+    tracers are painted from the SAME Gaussian (f_NL=0) linear field with
+    bias.scale_dependent_bias_tracer; f_NL enters ONLY through the k^-2 term, so
+    f_NL and b_phi are perfectly degenerate (the product) at all k. Reverse-mode
+    mx.grad per component. Returns (J, P_fid): J (3*n_bins, 6) float64.
+    """
+    theta = mx.array([float(theta_fid[n]) for n in PARAM_NAMES_MT_BPHI])
+    invM = _inv_M_grid(box, cosmo, backend=backend)
+    n_bins = len(k_bins)
+    n_data = 3 * n_bins
+
+    def model_P(t):
+        f_NL, A, b1A, bpA, b1B, bpB = t[0], t[1], t[2], t[3], t[4], t[5]
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=0.0, backend=backend)
+        hA = B.scale_dependent_bias_tracer(delta, box, cosmo, b1A, bpA, f_NL, invM=invM)
+        hB = B.scale_dependent_bias_tracer(delta, box, cosmo, b1B, bpB, f_NL, invM=invM)
+        return _multitracer_vector(hA, hB, box, k_bins, dk)
+
+    J = np.empty((n_data, len(PARAM_NAMES_MT_BPHI)), dtype=np.float64)
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: model_P(t)[d])(theta)
+        J[d, :] = np.asarray(g, dtype=np.float64)
+    P_fid = np.asarray(model_P(theta), dtype=np.float64)
+    return J, P_fid
+
+
+def multitracer_bphi_gaussian_covariance(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    n_A,
+    n_B,
+    n_mock=400,
+    seed0=2000,
+    dk=None,
+    backend="camb",
+    hartlap=True,
+    shot=True,
+):
+    """Mock Gaussian covariance for the explicit-b_phi tracer pair (at the
+    fiducial f_NL / b_phi). Same shot-noise treatment as
+    multitracer_gaussian_covariance.
+    """
+    fnl, A = float(theta_fid["f_NL"]), float(theta_fid["A"])
+    b1A, bpA = float(theta_fid["b1_A"]), float(theta_fid["bphi_A"])
+    b1B, bpB = float(theta_fid["b1_B"]), float(theta_fid["bphi_B"])
+    invM = _inv_M_grid(box, cosmo, backend=backend)
+
+    def paint(seed):
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=0.0, backend=backend)
+        hA = B.scale_dependent_bias_tracer(delta, box, cosmo, b1A, bpA, fnl, invM=invM)
+        hB = B.scale_dependent_bias_tracer(delta, box, cosmo, b1B, bpB, fnl, invM=invM)
+        return hA, hB
+
+    return _mt_mock_covariance(
+        paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap
+    )
+
+
+def universality_bphi_fiducial(f_NL, A, b1_A, b1_B, delta_c=1.686):
+    """Explicit-b_phi fiducial with b_phi_i = 2 delta_c (b1_i - 1) (universality)."""
+    return {
+        "f_NL": f_NL,
+        "A": A,
+        "b1_A": b1_A,
+        "bphi_A": 2.0 * delta_c * (float(b1_A) - 1.0),
+        "b1_B": b1_B,
+        "bphi_B": 2.0 * delta_c * (float(b1_B) - 1.0),
+    }
+
+
+def universality_bphi_tie_matrix(theta_fid, delta_c=1.686):
+    """Chain-rule map T (6x4) for the explicit-b_phi model: free
+    (f_NL, A, b1_A, bphi_A, b1_B, bphi_B) -> tied (f_NL, A, b1_A, b1_B), enforcing
+    b_phi_i = 2 delta_c (b1_i - 1) (so db_phi/db1 = 2 delta_c, db_phi/dA = 0 --
+    cleaner than the native tie, no mesh sigma^2). Returns (T, tied_names,
+    tied_fiducial).
+    """
+    T = np.zeros((6, 4), dtype=np.float64)
+    T[0, 0] = 1.0  # f_NL -> f_NL
+    T[1, 1] = 1.0  # A -> A
+    T[2, 2] = 1.0  # b1_A -> b1_A
+    T[4, 3] = 1.0  # b1_B -> b1_B
+    T[3, 2] = 2.0 * delta_c  # bphi_A <- b1_A
+    T[5, 3] = 2.0 * delta_c  # bphi_B <- b1_B
+    tied_names = ("f_NL", "A", "b1_A", "b1_B")
+    tied_fid = {
+        "f_NL": float(theta_fid["f_NL"]),
+        "A": float(theta_fid["A"]),
+        "b1_A": float(theta_fid["b1_A"]),
+        "b1_B": float(theta_fid["b1_B"]),
+    }
+    return T, tied_names, tied_fid

@@ -21,6 +21,7 @@ trivially differentiable -- mx.grad / mx.jvp flow through to f_NL.
 """
 
 import numpy as np
+import mlx.core as mx
 
 from mbody import cosmology as C
 from mbody import fields as F
@@ -140,3 +141,31 @@ def scale_dependent_bias_response_binned(
         den = P_weight[mask].sum()
         out[b] = 4.0 * b2 * amplitude * sigma2 / b1 * (num / den)
     return out
+
+
+def scale_dependent_bias_tracer(
+    delta, box, cosmo, b1, b_phi, f_NL, z=0.0, backend="camb", invM=None
+):
+    """Tracer with an EXPLICIT local-f_NL scale-dependent bias (Fourier space):
+
+        delta_h(k) = [b1 + b_phi f_NL / M(k)] delta(k),
+
+    M(k) = ic.poisson_M (delta = M phi), so 1/M(k) ~ 1/(k^2 T(k)) is the Dalal
+    scale-dependent-bias kernel. Unlike local_bias_tracer -- whose f_NL response
+    is EMERGENT from b2 and so carries a broadband b2 self-calibration handle that
+    partially breaks the b_phi-f_NL degeneracy at high k -- here b_phi is a FREE
+    parameter entering ONLY through the k^-2 term. So d/df_NL and d/db_phi share
+    the same 1/M(k) shape and are PERFECTLY degenerate (the product f_NL*b_phi) at
+    all k, the faithful Barreira/Dalal degeneracy. Pass `delta` a Gaussian
+    (f_NL=0) field -- the matter field has no O(f_NL) power, so f_NL is a pure
+    bias parameter here. b1, b_phi, f_NL may be floats or mx scalars
+    (differentiable). `invM` (the precomputed 1/M(k) on the rfft half-grid) is
+    optional caching. Returns a real (N, N, N) field.
+    """
+    N = box.n_mesh
+    if invM is None:
+        _, _, k_mag = F.k_grid(box)
+        M = IC.poisson_M(np.where(k_mag > 0, k_mag, 1.0), cosmo, z=z, backend=backend)
+        invM = np.where(k_mag > 0, 1.0 / M, 0.0).astype(np.float32)
+    factor = P.as_complex(b1 + b_phi * f_NL * mx.array(invM))
+    return mx.fft.irfftn(factor * mx.fft.rfftn(delta), s=(N, N, N), axes=(0, 1, 2))

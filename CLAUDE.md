@@ -141,9 +141,46 @@ tests/      unit + smoke tests
   was generalized to a loss of (x_final, p_final) because the redshift field depends
   on the final velocities; `b1`/`b2`/`f_growth` are downstream cheap grads.
 - **Honest finding:** the quadrupole sharply pins `f_growth` (>10x) and PARTIALLY
-  recovers `sigma(f_NL)` (~1.6x), but does NOT break the `b_phi*f_NL` degeneracy
-  (only the k^-2 shape + multi-tracer do). Fingers-of-god are absent in a PM, so
-  trust RSD only at k < ~0.1 h/Mpc. See `docs/rsd.md`, `pixi run rsd`.
+  recovers `sigma(f_NL)` (~1.6x), but does NOT break the `b_phi*f_NL` degeneracy.
+  Neither does multi-tracer alone: both constrain the *product* `f_NL*b_phi`, and
+  pinning `f_NL` needs a `b_phi(b1)` relation (universality) -- which multi-tracer
+  relaxes/robustifies and sharpens via cancellation (see the multi-tracer section
+  below and `docs/multitracer.md`). Fingers-of-god are absent in a PM, so trust
+  RSD only at k < ~0.1 h/Mpc. See `docs/rsd.md`, `pixi run rsd`.
+
+## Multi-tracer Fisher (the b_phi-f_NL capstone)
+
+The on-target capstone: two tracers painted from the SAME field break part of the
+b_phi-f_NL degeneracy via sample-variance cancellation (Seljak 2009; Barreira &
+Krause 2023). Loose-API-only in `mbody/fisher.py` (+ `bias.scale_dependent_bias_tracer`),
+`scripts/{probe_multitracer,plot_multitracer_fisher}.py`, `tests/test_multitracer.py`,
+`docs/multitracer.md`, `pixi run {probe-multitracer,multitracer}`. Data vector
+`mu=[P_AA,P_AB,P_BB]` (spectrum-major, RAW linear band powers -- P_AB not positive
+-> full block covariance with per-tracer Poisson shot noise; the gain is
+shot-noise-limited). f_NL/A share ONE reversible-adjoint sweep per component (the
+loss paints both tracers from the same final field); the per-tracer b's are
+downstream. `multitracer_forecast(J,cov,fiducial,param_names,priors=,tie=)` with a
+universality chain-rule map `T` (J_tied = J @ T) gives the free or tied forecast.
+
+- **TWO KEY FACTS (both load-bearing, both subtle):** (1) the b_phi-f_NL degeneracy
+  is a PRODUCT degeneracy, INVISIBLE to a Fisher at f_NL=0 (the cross-term ~f_NL),
+  so it must be shown at a non-zero fiducial f_NL; (2) the cancellation is
+  shot-noise-limited (noiseless -> vacuous), so shot noise 1/n_i is in the covariance.
+- **Two tracer models.** NATIVE `local_bias_tracer` (b_phi emergent from b2,
+  b_phi=2 b2 A sigma^2): used for the f_NL=0 cancellation headline THROUGH the PM
+  (adjoint), but at high k the b2 broadband loop self-calibrates b_phi (artifact),
+  so its degeneracy demo is low-k only. EXPLICIT `scale_dependent_bias_tracer`
+  (b_phi a free k^-2 param on a Gaussian field, decoupled from b2): the clean all-k
+  degeneracy, linear-field only (the degeneracy is a linear-bias statement; PM does
+  not change it). Universality is `b_phi=2 delta_c(b1-1)` (explicit) /
+  `b2=delta_c(b1-1)/(A sigma^2)` (native).
+- **Results (measured):** cancellation (native, f_NL=0) sigma(f_NL) 1t->2t: linear
+  2.5x, PM 4.3x. Degeneracy (explicit, f_NL=100): FREE -> f_NL singular (only the
+  product constrained, no b_phi prior needed), TIED universality -> f_NL recovered,
+  multi-tracer 2.7x (the |b1_A-b1_B| differential gain). Covariance:
+  `multitracer_analytic_covariance` (clean Gaussian block, exact on white noise) is
+  validated against the mock `multitracer_{,bphi_}gaussian_covariance` (ground truth;
+  colored field inflates steep low-k bins). 166 tests.
 
 ## External convergence cross-check
 

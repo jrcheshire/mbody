@@ -13,8 +13,10 @@ The ellipses (linear field) are drawn mono (dashed grey) vs mono+quad (solid
 colour) for the science pairs. The honest takeaway, printed as sigmas for both
 the linear and PM forward models: the quadrupole sharply constrains the growth
 amplitude f_growth and partially recovers sigma(f_NL) lost to the bias/amplitude
-degeneracy -- but it does NOT break the fundamental b_phi*f_NL degeneracy (only
-the k^-2 scale shape and multi-tracer do), which a single-tracer toy cannot.
+degeneracy -- but it does NOT break the fundamental b_phi*f_NL degeneracy. Neither
+does multi-tracer alone: both constrain the product f_NL*b_phi, and pinning f_NL
+needs a b_phi(b1) relation (universality), which multi-tracer relaxes + sharpens
+(see docs/multitracer.md, pixi run multitracer).
 
 Writes outputs/fisher_rsd.png (gitignored). Run:
     pixi run python scripts/plot_fisher_rsd.py

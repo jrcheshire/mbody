@@ -92,11 +92,14 @@ degeneracy.
 - **Fingers-of-god are absent.** A PM under-resolves virial velocities, so RSD is
   trustworthy only in the large-scale Kaiser regime (`k < ~0.1 h/Mpc`); the
   small-scale quadrupole is biased. Fine for `f_NL`, which lives at `k -> 0`.
-- **RSD does not break the `b_phi * f_NL` degeneracy.** Only the distinctive
-  `k^-2` scale shape and **multi-tracer** methods do that (Barreira 2022,
-  arXiv:2205.05673); a single-tracer toy cannot. The quadrupole helps the
-  bias/amplitude block, not the fundamental `b_phi` direction -- pointing at
-  multi-tracer (the SPHEREx strategy) as the real lever.
+- **RSD does not break the `b_phi * f_NL` degeneracy** -- and neither does
+  multi-tracer by itself. Both a single tracer's scale-dependent-bias amplitude
+  and the multi-tracer cross spectra constrain the *product* `f_NL * b_phi`, not
+  `f_NL` alone (Barreira 2022, arXiv:2205.05673; Barreira & Krause 2023,
+  arXiv:2302.09066). Pinning `f_NL` needs a `b_phi(b1)` relation (e.g.
+  universality); multi-tracer *relaxes and robustifies* that prior and sharpens
+  the products via sample-variance cancellation. That is the SPHEREx strategy, now
+  built and quantified in `docs/multitracer.md` (`pixi run multitracer`).
 - The PM forecast reuses the **Gaussian (disconnected) mock covariance**; the PM
   nonlinearity enters the signal/Jacobian, not the covariance.
 

@@ -220,8 +220,10 @@ P(k)/band-power diagnostics + Fisher Jacobians (the force solve keeps plain CIC)
 covariance; `f_NL`/`A` use the reversible adjoint with a momentum-seeded loss
 (`loss_uses_momentum`, since the redshift field depends on the final velocities).
 **Finding:** the quadrupole sharply pins `f_growth` (>10x) and partially recovers
-`sigma(f_NL)` (~1.6x), but does NOT break `b_phi*f_NL` (only the k^-2 shape +
-multi-tracer do); fingers-of-god are absent in a PM (trust k < ~0.1 h/Mpc).
+`sigma(f_NL)` (~1.6x), but does NOT break `b_phi*f_NL`; neither does multi-tracer
+alone (both constrain the *product* `f_NL*b_phi` -- pinning `f_NL` needs a
+`b_phi(b1)` relation, which multi-tracer relaxes + sharpens; see
+`docs/multitracer.md`). Fingers-of-god are absent in a PM (trust k < ~0.1 h/Mpc).
 `scripts/probe_rsd.py` (`pixi run rsd`), `plot_rsd_multipoles` / `plot_fisher_rsd`,
 `docs/rsd.md`.
 
@@ -229,7 +231,14 @@ multi-tracer do); fingers-of-god are absent in a PM (trust k < ~0.1 h/Mpc).
 
 - Gradients w.r.t. cosmological parameters (autodiff Fisher).
 - A toy galaxy bias and exploration of `b_phi` -- the real SPHEREx lever; its
-  degeneracy with `f_NL` is the dominant systematic (see CLAUDE.md).
+  degeneracy with `f_NL` is the dominant systematic (see CLAUDE.md). **DONE (the
+  multi-tracer Fisher capstone):** two tracers from the same field break part of
+  the b_phi-f_NL degeneracy via sample-variance cancellation. Headlines (measured):
+  cancellation tightens `sigma(f_NL)` 2.5x (linear) / 4.3x (PM); the explicit-b_phi
+  degeneracy is faithful (FREE -> only the product `f_NL*b_phi` constrained; TIED
+  universality -> f_NL recovered, 2.7x multi-tracer gain). Two key subtleties: the
+  degeneracy is invisible at `f_NL=0` (a product degeneracy), and the gain is
+  shot-noise-limited. `docs/multitracer.md`, `pixi run {probe-multitracer,multitracer}`.
 - Leapfrog AD memory (reverse-mode grows with step count as the graph unrolls).
   RESOLVED via a reversible adjoint, NOT checkpointing: `mx.checkpoint` was
   measured to give no memory reduction here (the PM solve is near-linear, so
