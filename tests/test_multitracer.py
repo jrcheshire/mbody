@@ -33,6 +33,8 @@ from mbody import ic as IC
 from mbody import bias as B
 from mbody import integrate as IN
 from mbody import fisher as FI
+from mbody import cosmology as C
+from mbody import rsd as RS
 
 COSMO = Cosmology()
 BACKEND = "eh98"
@@ -379,3 +381,236 @@ def test_bphi_degeneracy_free_singular_tied_recovered():
     assert np.isfinite(s1) and np.isfinite(s2)
     assert s2 < s1  # multi-tracer is tighter (the |b1_A - b1_B| differential gain)
     assert s1 / s2 > 1.5  # measured ~2.7x; a comfortable floor
+
+
+# --- redshift-space multi-tracer (the composition capstone) ---------------------
+#
+# Two local-bias tracers painted from the SAME redshift-space field, summarized by
+# their auto/cross multipoles: the quadrupole's f_growth handle stacks on top of the
+# multi-tracer cancellation, and the f_NL/A gradients flow through the momentum-seeded
+# adjoint (the loss depends on the final velocities). Native tracer only; tolerances
+# measured in scripts/probe_rsd_multitracer.py.
+
+LOS = 0
+ELLS = (0, 2)
+THETA_RSD = FI.universality_rsd_fiducial(
+    0.0, 1.0, 1.0, 1.5, 2.5, BOX, COSMO, backend=BACKEND
+)
+H_RSD = {
+    "f_NL": 50.0,
+    "A": 1e-2,
+    "f_growth": 1e-2,
+    "b1_A": 1e-2,
+    "b2_A": 1e-2,
+    "b1_B": 1e-2,
+    "b2_B": 1e-2,
+}
+
+
+def _rsd_mt_vec(theta, seed, kb):
+    f_NL = mx.array(theta["f_NL"])
+    delta = theta["A"] * IC.linear_density(
+        BOX, COSMO, seed=seed, f_NL=f_NL, backend=BACKEND
+    )
+    feff = theta["f_growth"] * C.growth_rate(0.0, COSMO)
+    hA = FI._redshift_tracer_linear(delta, BOX, theta["b1_A"], theta["b2_A"], feff, LOS)
+    hB = FI._redshift_tracer_linear(delta, BOX, theta["b1_B"], theta["b2_B"], feff, LOS)
+    return np.asarray(
+        FI._mt_multipole_vector(hA, hB, BOX, kb, ELLS, LOS, None), np.float64
+    )
+
+
+def test_linear_rsd_multitracer_jacobian_vs_fd():
+    # Each linear RSD-MT column matches matched-phase FD; measured worst ~2e-4 (b2).
+    kb = _kb(BOX)
+    J, _ = FI.linear_multitracer_multipole_jacobian(
+        BOX, COSMO, THETA_RSD, kb, ells=ELLS, los_axis=LOS, seed=0, backend=BACKEND
+    )
+    for i, p in enumerate(FI.PARAM_NAMES_MT_RSD):
+        hi = dict(THETA_RSD, **{p: THETA_RSD[p] + H_RSD[p]})
+        lo = dict(THETA_RSD, **{p: THETA_RSD[p] - H_RSD[p]})
+        fd = (_rsd_mt_vec(hi, 0, kb) - _rsd_mt_vec(lo, 0, kb)) / (2 * H_RSD[p])
+        assert _col_err(J[:, i], fd) < 1e-3, f"{p}"
+
+
+def test_pm_rsd_multitracer_downstream_vs_fd():
+    # The downstream columns (f_growth + the four biases) are an mx.grad at the FIXED
+    # final (x, p). Validate by FD on that same fixed state. f_growth's FD is limited
+    # by the periodic-wrap floor of the redshift map (measured ~2e-3); the biases ~1e-5.
+    kb = _kb(BOX)
+    xf, pf = IN.leapfrog(
+        BOX,
+        COSMO,
+        TIME_PM,
+        seed=0,
+        f_NL=mx.array(THETA_RSD["f_NL"]),
+        amplitude=mx.array(THETA_RSD["A"]),
+        lpt_order=2,
+    )
+    xf, pf = mx.stop_gradient(xf), mx.stop_gradient(pf)
+
+    def vec(t):
+        s = RS.redshift_space_positions(
+            xf, pf, BOX, COSMO, z=TIME_PM.z_final, los_axis=LOS, f_growth=t[0]
+        )
+        field = F.interlaced_density_contrast(s, BOX)
+        hA = B.local_bias_tracer(field, t[1], t[2])
+        hB = B.local_bias_tracer(field, t[3], t[4])
+        return FI._mt_multipole_vector(hA, hB, BOX, kb, ELLS, LOS, None)
+
+    t0 = mx.array(
+        [
+            THETA_RSD["f_growth"],
+            THETA_RSD["b1_A"],
+            THETA_RSD["b2_A"],
+            THETA_RSD["b1_B"],
+            THETA_RSD["b2_B"],
+        ]
+    )
+    n_data = 3 * len(ELLS) * len(kb)
+    Jd = np.array(
+        [
+            np.asarray(mx.grad(lambda t, d=d: vec(t)[d])(t0), np.float64)
+            for d in range(n_data)
+        ]
+    )
+    eye = np.eye(5)
+    names = ["f_growth", "b1_A", "b2_A", "b1_B", "b2_B"]
+    for j, nm in enumerate(names):
+        hi = mx.array(np.asarray(t0) + H_RSD[nm] * eye[j])
+        lo = mx.array(np.asarray(t0) - H_RSD[nm] * eye[j])
+        fd = (np.asarray(vec(hi)) - np.asarray(vec(lo))) / (2 * H_RSD[nm])
+        assert _col_err(Jd[:, j], fd) < 5e-3, f"downstream {nm}"
+
+
+def test_pm_rsd_multitracer_adjoint_matches_replay():
+    # The IC columns (f_NL, A) come from the momentum-seeded adjoint (one shared sweep
+    # per component). Validate against replay mx.grad for the AA, AB AND BB quadrupole
+    # pivot bins (the novel two-tracer cross-multipole path) -- both autodiff, agreeing
+    # to the float32 CIC floor (measured ~3e-7).
+    kb = _kb(BOX)
+    nb = len(kb)
+
+    def loss_at(x, p, d):
+        s = RS.redshift_space_positions(
+            x,
+            p,
+            BOX,
+            COSMO,
+            z=TIME_PM.z_final,
+            los_axis=LOS,
+            f_growth=THETA_RSD["f_growth"],
+        )
+        field = F.interlaced_density_contrast(s, BOX)
+        hA = B.local_bias_tracer(field, THETA_RSD["b1_A"], THETA_RSD["b2_A"])
+        hB = B.local_bias_tracer(field, THETA_RSD["b1_B"], THETA_RSD["b2_B"])
+        return FI._mt_multipole_vector(hA, hB, BOX, kb, ELLS, LOS, None)[d]
+
+    def replay(tv, d):
+        x, p = IN.leapfrog(
+            BOX, COSMO, TIME_PM, seed=0, f_NL=tv[0], amplitude=tv[1], lpt_order=2
+        )
+        return loss_at(x, p, d)
+
+    tv0 = mx.array([THETA_RSD["f_NL"], THETA_RSD["A"]])
+    for d in (nb, 3 * nb, 5 * nb):  # AA, AB, BB quadrupole pivot bins
+        g_adj = np.asarray(
+            IN.adjoint_grad_ic(
+                lambda x, p, d=d: loss_at(x, p, d),
+                BOX,
+                COSMO,
+                TIME_PM,
+                seed=0,
+                f_NL=THETA_RSD["f_NL"],
+                amplitude=THETA_RSD["A"],
+                loss_uses_momentum=True,
+            )
+        )
+        g_rep = np.asarray(mx.grad(lambda tv, d=d: replay(tv, d))(tv0))
+        assert np.all(np.abs(g_adj / g_rep - 1.0) < 1e-4), f"d={d}"
+
+
+def test_rsd_shot_noise_is_monopole():
+    # A white shot field is pure-monopole with band power 1/n (the unit anchor); the
+    # raw quadrupole carries only the discrete-shell leakage (<< the monopole). So shot
+    # enters the data-vector MEAN in the monopole auto power only.
+    kb = _kb(BOX, ns=(2, 3, 4, 5))
+    n = 1e-3
+    N, V = BOX.n_mesh, BOX.box_size**3
+    sig = float(np.sqrt(N**3 / (n * V)))
+    P0s, P2s = [], []
+    for s in range(80):
+        w = sig * mx.random.normal((N, N, N), key=mx.random.key(700 + s))
+        P0s.append(
+            np.asarray(F.band_power_multipole(w, BOX, kb, 0, los_axis=LOS), np.float64)
+        )
+        P2s.append(
+            np.asarray(F.band_power_multipole(w, BOX, kb, 2, los_axis=LOS), np.float64)
+        )
+    P0 = np.mean(P0s, axis=0) * n
+    P2 = np.mean(P2s, axis=0) * n
+    assert np.all(np.abs(P0 - 1.0) < 0.1)  # monopole band power = 1/n
+    assert np.all(np.abs(P2) < 0.5 * P0)  # quadrupole is raw-shell leakage only
+
+
+def _rsd_head(box, theta, ells, nseed=3):
+    """1- and 2-tracer tied RSD-MT forecasts at a fixed ells set (headline helper)."""
+    kb = np.arange(1.5, 8.0, 1.0) * box.k_fundamental
+    ne, nb = len(ells), len(kb)
+    J = np.zeros((3 * ne * nb, 7))
+    for s in range(nseed):
+        J += FI.linear_multitracer_multipole_jacobian(
+            box, COSMO, theta, kb, ells=ells, los_axis=LOS, seed=s, backend=BACKEND
+        )[0]
+    J /= nseed
+    cov = FI.multitracer_multipole_gaussian_covariance(
+        box,
+        COSMO,
+        theta,
+        kb,
+        5e-4,
+        5e-4,
+        ells=ells,
+        los_axis=LOS,
+        n_mock=250,
+        backend=BACKEND,
+    )
+    priors = {"A": 0.1}
+    tie = FI.universality_rsd_tie_matrix(theta, box, COSMO, backend=BACKEND)
+    fc2 = FI.multitracer_forecast(
+        J, cov, theta, FI.PARAM_NAMES_MT_RSD, priors=priors, tie=tie
+    )
+    naa = ne * nb
+    JA = J[:naa][:, [0, 1, 2, 3, 4]]
+    covA = cov[:naa, :naa]
+    s2 = B.mesh_variance(box, COSMO, backend=BACKEND)
+    A, b1 = theta["A"], theta["b1_A"]
+    T1 = np.zeros((5, 4))
+    T1[0, 0] = T1[1, 1] = T1[2, 2] = T1[3, 3] = 1.0
+    T1[4, 1] = -DELTA_C * (b1 - 1) / (A**2 * s2)
+    T1[4, 3] = DELTA_C / (A * s2)
+    fc1 = FI.FisherForecast(
+        JA @ T1,
+        covariance=covA,
+        fiducial_params={n: theta[n] for n in ("f_NL", "A", "f_growth", "b1_A")},
+        param_names=("f_NL", "A", "f_growth", "b1_A"),
+        priors=priors,
+    )
+    return fc1, fc2
+
+
+def test_rsd_multitracer_headline_cancellation_and_quadrupole():
+    # The composition headline: the second tracer's sample-variance cancellation
+    # tightens sigma(f_NL) (measured ~1.8-2.1x), and the quadrupole sharply pins
+    # sigma(f_growth) (measured >5x on 1-tracer). Both stack. Tied universality basis.
+    box = BoxConfig(box_size=1024.0, n_mesh=32, n_particles=32)
+    theta = FI.universality_rsd_fiducial(
+        0.0, 1.0, 1.0, 1.5, 2.5, box, COSMO, backend=BACKEND
+    )
+    fc1_m, fc2_m = _rsd_head(box, theta, (0,))
+    fc1_q, _ = _rsd_head(box, theta, (0, 2))
+    assert fc2_m.sigma("f_NL") < fc1_m.sigma("f_NL")
+    assert fc1_m.sigma("f_NL") / fc2_m.sigma("f_NL") > 1.4  # cancellation gain
+    assert fc1_q.sigma("f_growth") < 0.5 * fc1_m.sigma(
+        "f_growth"
+    )  # quadrupole pins f_growth

@@ -180,7 +180,21 @@ universality chain-rule map `T` (J_tied = J @ T) gives the free or tied forecast
   multi-tracer 2.7x (the |b1_A-b1_B| differential gain). Covariance:
   `multitracer_analytic_covariance` (clean Gaussian block, exact on white noise) is
   validated against the mock `multitracer_{,bphi_}gaussian_covariance` (ground truth;
-  colored field inflates steep low-k bins). 166 tests.
+  colored field inflates steep low-k bins). 172 tests.
+- **Redshift-space multi-tracer (the composition capstone).** Two tracers from the
+  SAME redshift-space field, summarized by auto/cross MULTIPOLES
+  (`fields.cross_power_multipole` = `band_power_multipole` with
+  `|delta_k|^2 -> Re(a_k conj b_k)`). Native only; `PARAM_NAMES_MT_RSD =
+  (f_NL,A,f_growth,b1_A,b2_A,b1_B,b2_B)` (f_growth shared+free). `fisher.{linear,pm}_
+  multitracer_multipole_jacobian` (PM f_NL/A via the MOMENTUM-seeded adjoint,
+  `loss_uses_momentum=True`; f_growth+b's downstream), `multitracer_multipole_
+  gaussian_covariance` (mock; shot is white -> enters the data MEAN in the MONOPOLE
+  only, but still inflates ALL-multipole covariance), `universality_rsd_{fiducial,
+  tie_matrix}` (the native tie with an f_growth passthrough). **Conclusion unchanged**
+  (RSD doesn't break b_phi*f_NL); the win is that the two levers STACK -- the
+  cancellation tightens sigma(f_NL) (1t->2t ~2.3-2.9x) AND the quadrupole pins
+  f_growth (2t 0.57->0.12). `scripts/{probe_rsd_multitracer,plot_rsd_multitracer}.py`,
+  `docs/multitracer.md`, `pixi run {probe-rsd-multitracer,rsd-multitracer}`.
 
 ## External convergence cross-check
 

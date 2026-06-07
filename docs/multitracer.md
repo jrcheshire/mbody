@@ -101,11 +101,50 @@ tighten `sigma(f_NL)` (universality-tied) over one:
   the universality-tied `sigma(f_NL)` (and the relative-bias combination), not the
   individual product `sigma(f_NL*b_phi_A)`.
 
+## Redshift-space multi-tracer (the composition)
+
+Two tracers painted from the SAME *redshift-space* field, summarized by their
+auto/cross **multipoles** (`fields.cross_power_multipole` is the cross sibling of
+`band_power_multipole`). This composes the two `f_NL` levers: the multi-tracer
+sample-variance cancellation AND the line-of-sight quadrupole, which sharply pins
+the growth rate `f_growth`. The scientific conclusion is unchanged from the
+isotropic case (RSD does not break `b_phi*f_NL`; multi-tracer constrains the
+products) -- this is the completeness/composition piece.
+
+- Native tracer only. `PARAM_NAMES_MT_RSD = (f_NL, A, f_growth, b1_A, b2_A, b1_B,
+  b2_B)` -- `f_growth` is shared (one velocity field) and left FREE (a distinct
+  growth-rate parameter, not tied). Data vector = the raw LINEAR multipole band
+  powers, spectrum-major then ell-major `[P_AA^0, P_AA^2, P_AB^0, P_AB^2, P_BB^0,
+  P_BB^2]`.
+- `linear_multitracer_multipole_jacobian` / `pm_multitracer_multipole_jacobian`:
+  the merge of the RSD single-tracer and the isotropic multi-tracer jacobians. In
+  the PM case f_NL/A flow through the **momentum-seeded** reversible adjoint
+  (`loss_uses_momentum=True`, since the redshift field depends on the final
+  velocities); `f_growth` and the four b's are cheap downstream gradients.
+- `multitracer_multipole_gaussian_covariance`: the mock ground-truth block
+  covariance (no analytic multipole block, as for the single-tracer RSD case).
+  **Shot-noise physics:** the white Poisson field is isotropic, so its SIGNAL is the
+  monopole `1/n_i` only (the quadrupole/cross means are unchanged, up to the raw
+  discrete-shell leakage). It still raises the *covariance* of all multipoles, like
+  any Gaussian term -- not confined to the monopole there.
+- `universality_rsd_{fiducial,tie_matrix}`: the native universality tie with the
+  `f_growth` passthrough column inserted (a `7x5` map to `(f_NL, A, f_growth, b1_A,
+  b1_B)`).
+
+**Results (measured; `pixi run probe-rsd-multitracer`, native, `f_NL=0`, L=1024).**
+The two levers stack:
+- `sigma(f_NL)`: the cancellation gives `1t -> 2t` ~`2.3-2.9x` (monopole `~170 ->
+  60`, mono+quad `~131 -> 57`).
+- `sigma(f_growth)`: the quadrupole pins it sharply, 2-tracer `0.57 -> 0.12`
+  (mono -> mono+quad); the best forecast is 2-tracer mono+quad.
+
 ## Reproduce
 
 ```
-pixi run probe-multitracer   # all validation numbers + both headlines (no files)
-pixi run multitracer         # outputs/multitracer_fisher.png (the 3-panel figure)
+pixi run probe-multitracer       # isotropic validation numbers + both headlines
+pixi run multitracer             # outputs/multitracer_fisher.png (the 3-panel figure)
+pixi run probe-rsd-multitracer   # redshift-space validation numbers + the 2x2 headline
+pixi run rsd-multitracer         # outputs/rsd_multitracer.png (the composition figure)
 pixi run python -m pytest tests/test_multitracer.py
 ```
 

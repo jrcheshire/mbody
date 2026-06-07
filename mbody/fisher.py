@@ -917,30 +917,40 @@ def multitracer_analytic_covariance(box, k_bins, P_AA, P_AB, P_BB, n_A, n_B, dk=
     return cov
 
 
-def _mt_mock_covariance(paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap):
-    """Mock covariance of [P_AA, P_AB, P_BB] for a tracer-pair painter.
+def _mt_mock_covariance(
+    paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap, measure=None
+):
+    """Mock covariance of a tracer-pair data vector for a tracer-pair painter.
 
     paint(seed) -> (hA, hB), the two real tracer fields for one realization.
     Optionally adds independent white shot noise to each (band power 1/n_i, the
     Poisson level for number density n_i per (Mpc/h)^3 -- cross spectra get none).
-    Returns the (3*n_bins, spectrum-major) sample covariance, Hartlap-corrected
-    when hartlap=True.
+    measure(hA, hB) -> the data-vector row (a 1D float64 numpy array); defaults to
+    the isotropic [P_AA, P_AB, P_BB] (_multitracer_vector). Pass a multipole measure
+    for the redshift-space multi-tracer covariance. Returns the sample covariance,
+    Hartlap-corrected when hartlap=True.
     """
+    if measure is None:
+
+        def measure(hA, hB):
+            return np.asarray(
+                _multitracer_vector(hA, hB, box, k_bins, dk), dtype=np.float64
+            )
+
     N, V = box.n_mesh, box.box_size**3
     # real-space white-noise rms whose band power is 1/n_i (Poisson shot level)
     sigA = float(np.sqrt(N**3 / (float(n_A) * V)))
     sigB = float(np.sqrt(N**3 / (float(n_B) * V)))
-    n_data = 3 * len(k_bins)
-    data = np.empty((n_mock, n_data), dtype=np.float64)
+    rows = []
     for m in range(n_mock):
         hA, hB = paint(seed0 + m)
         if shot:
             kA, kB = mx.random.split(mx.random.key(7_000_003 + seed0 + m))
             hA = hA + sigA * mx.random.normal((N, N, N), key=kA)
             hB = hB + sigB * mx.random.normal((N, N, N), key=kB)
-        data[m, :] = np.asarray(
-            _multitracer_vector(hA, hB, box, k_bins, dk), dtype=np.float64
-        )
+        rows.append(measure(hA, hB))
+    data = np.asarray(rows, dtype=np.float64)
+    n_data = data.shape[1]
     cov = np.cov(data, rowvar=False)
     if hartlap:
         h = (n_mock - n_data - 2) / (n_mock - 1)
@@ -1204,5 +1214,323 @@ def universality_bphi_tie_matrix(theta_fid, delta_c=1.686):
         "A": float(theta_fid["A"]),
         "b1_A": float(theta_fid["b1_A"]),
         "b1_B": float(theta_fid["b1_B"]),
+    }
+    return T, tied_names, tied_fid
+
+
+# --- Redshift-space multi-tracer Fisher (the composition capstone) -------------
+#
+# Compose the two subsystems above: two local-bias tracers A, B painted from the
+# SAME redshift-space field, summarized by their auto/cross multipoles. This adds
+# the line-of-sight growth handle (the quadrupole pins f_growth) ON TOP OF the
+# multi-tracer sample-variance cancellation, and exercises the genuinely new
+# autodiff path -- the two-tracer cross-spectrum gradient seeded on the FINAL
+# VELOCITIES (the momentum-seeded reversible adjoint). The scientific conclusion
+# is unchanged from the isotropic case (RSD does not break b_phi*f_NL; multi-tracer
+# constrains the products); this is the completeness/composition piece.
+#
+# Only the NATIVE tracer is built here (b_phi emergent from b2): the explicit-b_phi
+# clean degeneracy is a large-scale linear, isotropic statement that the multipoles
+# do not change. Data vector mu = the raw LINEAR multipole band powers, spectrum-
+# major then ell-major: [P_AA^0, P_AA^2, P_AB^0, P_AB^2, P_BB^0, P_BB^2] (cross and
+# quadrupole are not positive-definite -> no log -> a full block COVARIANCE).
+# Shot noise is white -> it enters the data-vector MEAN in the monopole auto power
+# only (it still raises the covariance of all multipoles, like any Gaussian term).
+
+PARAM_NAMES_MT_RSD = ("f_NL", "A", "f_growth", "b1_A", "b2_A", "b1_B", "b2_B")
+
+
+def _mt_multipole_vector(field_a, field_b, box, k_bins, ells, los_axis, dk):
+    """[P_AA, P_AB, P_BB] multipoles of two real tracer fields, spectrum-major then
+    ell-major: [AA(ell0..bins), AA(ell2..), AB(ell0..), AB(ell2..), BB(ell0..),
+    BB(ell2..)]. AA/BB are band_power_multipole, AB is cross_power_multipole."""
+    parts = []
+    for el in ells:
+        parts.append(
+            F.band_power_multipole(field_a, box, k_bins, el, los_axis=los_axis, dk=dk)
+        )
+    for el in ells:
+        parts.append(
+            F.cross_power_multipole(
+                field_a, field_b, box, k_bins, el, los_axis=los_axis, dk=dk
+            )
+        )
+    for el in ells:
+        parts.append(
+            F.band_power_multipole(field_b, box, k_bins, el, los_axis=los_axis, dk=dk)
+        )
+    return mx.concatenate(parts)
+
+
+def linear_multitracer_multipole_jacobian(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    ells=(0, 2),
+    los_axis=0,
+    seed=0,
+    dk=None,
+    backend="camb",
+):
+    """dP_ell^{AA,AB,BB}/dtheta for two LINEAR redshift-space local-bias tracers.
+
+    theta = PARAM_NAMES_MT_RSD = (f_NL, A, f_growth, b1_A, b2_A, b1_B, b2_B). Both
+    tracers are painted from the SAME A*linear_density(f_NL) with the shared Kaiser
+    velocity term f_eff = f_growth * f_linear (one velocity field); the data vector
+    is the raw auto/cross multipole band powers (spectrum-major then ell-major).
+    Built per data component with reverse-mode mx.grad. Returns (J, P_fid): J
+    (3*n_ell*n_bins, 7) float64, P_fid the fiducial spectra (same layout).
+    """
+    theta = mx.array([float(theta_fid[n]) for n in PARAM_NAMES_MT_RSD])
+    f_lin = C.growth_rate(0.0, cosmo)
+    n_bins, n_ell = len(k_bins), len(ells)
+    n_data = 3 * n_ell * n_bins
+
+    def model_P(t):
+        f_NL, A, fg = t[0], t[1], t[2]
+        b1A, b2A, b1B, b2B = t[3], t[4], t[5], t[6]
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=f_NL, backend=backend)
+        hA = _redshift_tracer_linear(delta, box, b1A, b2A, fg * f_lin, los_axis)
+        hB = _redshift_tracer_linear(delta, box, b1B, b2B, fg * f_lin, los_axis)
+        return _mt_multipole_vector(hA, hB, box, k_bins, ells, los_axis, dk)
+
+    J = np.empty((n_data, len(PARAM_NAMES_MT_RSD)), dtype=np.float64)
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: model_P(t)[d])(theta)
+        J[d, :] = np.asarray(g, dtype=np.float64)
+    P_fid = np.asarray(model_P(theta), dtype=np.float64)
+    return J, P_fid
+
+
+def pm_multitracer_multipole_jacobian(
+    box,
+    cosmo,
+    time,
+    theta_fid,
+    k_bins,
+    ells=(0, 2),
+    los_axis=0,
+    seed=0,
+    dk=None,
+    backend="camb",
+    integrator=None,
+    lpt_order=2,
+):
+    """dP_ell^{AA,AB,BB}/dtheta for two PM-EVOLVED redshift-space local-bias tracers.
+
+    The merge of pm_multipole_jacobian (RSD single-tracer) and
+    pm_multitracer_jacobian: f_NL and A shape the primordial IC (evolved through
+    LPT + the leapfrog); the redshift-space map (mbody.rsd) uses the final positions
+    AND velocities, then BOTH tracers are painted from the same final field and
+    their auto/cross multipoles measured. Columns by where each parameter enters:
+
+      * f_NL, A: IC-stage -> the reversible adjoint (adjoint_grad_ic) with
+        loss_uses_momentum=True (the loss depends on the final velocities); one
+        O(grid)-memory sweep per data component returns both columns (the loss paints
+        both tracers from the shared final state, so two tracers cost one sweep).
+      * f_growth, b1_A, b2_A, b1_B, b2_B: downstream -- a cheap mx.grad at the fixed
+        final (x, p); f_growth scales the single RSD shift feeding both tracers.
+
+    Returns (J, P_fid): J (3*n_ell*n_bins, 7) float64, P_fid the fiducial spectra.
+    """
+    fid = {n: float(theta_fid[n]) for n in PARAM_NAMES_MT_RSD}
+    z_final = time.z_final
+    n_bins, n_ell = len(k_bins), len(ells)
+    n_data = 3 * n_ell * n_bins
+    J = np.empty((n_data, len(PARAM_NAMES_MT_RSD)), dtype=np.float64)
+
+    # Evolve once at the fiducial; the final state is fixed for the downstream cols.
+    x_final, p_final = IN.leapfrog(
+        box,
+        cosmo,
+        time,
+        seed=seed,
+        f_NL=mx.array(fid["f_NL"]),
+        amplitude=mx.array(fid["A"]),
+        backend=backend,
+        integrator=integrator,
+        lpt_order=lpt_order,
+    )
+    xf = mx.stop_gradient(x_final)
+    pf = mx.stop_gradient(p_final)
+
+    # Downstream f_growth, b1_A, b2_A, b1_B, b2_B: cheap mx.grad at fixed (x, p).
+    td = mx.array([fid["f_growth"], fid["b1_A"], fid["b2_A"], fid["b1_B"], fid["b2_B"]])
+
+    def downstream_P(t):
+        s = RS.redshift_space_positions(
+            xf, pf, box, cosmo, z=z_final, los_axis=los_axis, f_growth=t[0]
+        )
+        field = F.interlaced_density_contrast(s, box)
+        hA = B.local_bias_tracer(field, t[1], t[2])
+        hB = B.local_bias_tracer(field, t[3], t[4])
+        return _mt_multipole_vector(hA, hB, box, k_bins, ells, los_axis, dk)
+
+    for d in range(n_data):
+        g = mx.grad(lambda t, d=d: downstream_P(t)[d])(td)
+        J[d, 2] = float(g[0])  # f_growth
+        J[d, 3] = float(g[1])  # b1_A
+        J[d, 4] = float(g[2])  # b2_A
+        J[d, 5] = float(g[3])  # b1_B
+        J[d, 6] = float(g[4])  # b2_B
+    P_fid = np.asarray(downstream_P(td), dtype=np.float64)
+
+    # IC columns f_NL, A: the shared momentum-seeded adjoint, one sweep per component.
+    def make_loss(d):
+        def loss_field(x, p):
+            s = RS.redshift_space_positions(
+                x,
+                p,
+                box,
+                cosmo,
+                z=z_final,
+                los_axis=los_axis,
+                f_growth=fid["f_growth"],
+            )
+            field = F.interlaced_density_contrast(s, box)
+            hA = B.local_bias_tracer(field, fid["b1_A"], fid["b2_A"])
+            hB = B.local_bias_tracer(field, fid["b1_B"], fid["b2_B"])
+            return _mt_multipole_vector(hA, hB, box, k_bins, ells, los_axis, dk)[d]
+
+        return loss_field
+
+    for d in range(n_data):
+        g_ic = IN.adjoint_grad_ic(
+            make_loss(d),
+            box,
+            cosmo,
+            time,
+            seed=seed,
+            f_NL=fid["f_NL"],
+            amplitude=fid["A"],
+            backend=backend,
+            integrator=integrator,
+            lpt_order=lpt_order,
+            loss_uses_momentum=True,
+        )
+        J[d, 0] = float(g_ic[0])  # f_NL
+        J[d, 1] = float(g_ic[1])  # A
+    return J, P_fid
+
+
+def multitracer_multipole_gaussian_covariance(
+    box,
+    cosmo,
+    theta_fid,
+    k_bins,
+    n_A,
+    n_B,
+    ells=(0, 2),
+    los_axis=0,
+    n_mock=400,
+    seed0=3000,
+    dk=None,
+    backend="camb",
+    hartlap=True,
+    shot=True,
+):
+    """Mock Gaussian covariance of the redshift-space multi-tracer multipoles.
+
+    Generates n_mock Gaussian realizations of the two linear redshift-space
+    local-bias tracers at the fiducial parameters, optionally adds independent
+    white shot noise to each, measures the raw auto/cross multipole band powers,
+    and returns their sample covariance (3*n_ell*n_bins, spectrum-major then
+    ell-major). This is the ground-truth forecast covariance -- it captures the
+    cross-multipole AND cross-spectrum coupling exactly (there is no analytic
+    multipole block, as for the single-tracer RSD covariance). Hartlap-corrected
+    when hartlap=True.
+
+    Shot-noise physics: the Poisson field is white (isotropic), so its SIGNAL is
+    the monopole 1/n_i only -- the quadrupole and the cross-spectrum means are
+    unchanged (an isotropic field has no even multipole above ell = 0, up to the raw
+    discrete-shell leakage). Adding it in real space reproduces this in the data-
+    vector mean automatically. Note that, like any Gaussian term, shot still raises
+    the COVARIANCE of ALL multipoles (the variance of a multipole estimator depends
+    on the total power P + 1/n at every mu); it is not confined to the monopole there.
+    """
+    f_lin = C.growth_rate(0.0, cosmo)
+    fnl, A, fg = (
+        float(theta_fid["f_NL"]),
+        float(theta_fid["A"]),
+        float(theta_fid["f_growth"]),
+    )
+    b1A, b2A = float(theta_fid["b1_A"]), float(theta_fid["b2_A"])
+    b1B, b2B = float(theta_fid["b1_B"]), float(theta_fid["b2_B"])
+
+    def paint(seed):
+        delta = A * IC.linear_density(box, cosmo, seed=seed, f_NL=fnl, backend=backend)
+        hA = _redshift_tracer_linear(delta, box, b1A, b2A, fg * f_lin, los_axis)
+        hB = _redshift_tracer_linear(delta, box, b1B, b2B, fg * f_lin, los_axis)
+        return hA, hB
+
+    def measure(hA, hB):
+        return np.asarray(
+            _mt_multipole_vector(hA, hB, box, k_bins, ells, los_axis, dk),
+            dtype=np.float64,
+        )
+
+    return _mt_mock_covariance(
+        paint, box, k_bins, n_A, n_B, n_mock, seed0, dk, shot, hartlap, measure=measure
+    )
+
+
+def universality_rsd_fiducial(
+    f_NL, A, f_growth, b1_A, b1_B, box, cosmo, delta_c=1.686, z=0.0, backend="camb"
+):
+    """PARAM_NAMES_MT_RSD fiducial with b2_i at the universality value and f_growth
+    inserted -- the redshift-space sibling of universality_fiducial. A J_full built
+    here is consistent with universality_rsd_tie_matrix's linearization.
+    """
+    fid = universality_fiducial(
+        f_NL, A, b1_A, b1_B, box, cosmo, delta_c=delta_c, z=z, backend=backend
+    )
+    return {
+        "f_NL": fid["f_NL"],
+        "A": fid["A"],
+        "f_growth": f_growth,
+        "b1_A": fid["b1_A"],
+        "b2_A": fid["b2_A"],
+        "b1_B": fid["b1_B"],
+        "b2_B": fid["b2_B"],
+    }
+
+
+def universality_rsd_tie_matrix(
+    theta_fid, box, cosmo, delta_c=1.686, z=0.0, backend="camb"
+):
+    """Constant chain-rule map T (7x5) from the free MT-RSD basis to the tied basis
+    (f_NL, A, f_growth, b1_A, b1_B), enforcing b2_i = delta_c (b1_i-1)/(A sigma^2)
+    (so b_phi_i = 2 delta_c (b1_i-1)). f_growth is a direct passthrough, left FREE
+    (a distinct growth-rate parameter, NOT tied). J_tied = J_full @ T, exact only
+    when J_full is built at universality_rsd_fiducial. Mirrors universality_tie_matrix
+    with the f_growth column inserted. Returns (T, tied_names, tied_fiducial).
+    """
+    A = float(theta_fid["A"])
+    b1A = float(theta_fid["b1_A"])
+    b1B = float(theta_fid["b1_B"])
+    sigma2 = B.mesh_variance(box, cosmo, z=z, backend=backend)
+    db2_db1 = delta_c / (A * sigma2)
+    db2A_dA = -delta_c * (b1A - 1.0) / (A**2 * sigma2)
+    db2B_dA = -delta_c * (b1B - 1.0) / (A**2 * sigma2)
+    # free rows:  0 f_NL, 1 A, 2 f_growth, 3 b1_A, 4 b2_A, 5 b1_B, 6 b2_B
+    # tied cols:  0 f_NL, 1 A, 2 f_growth, 3 b1_A, 4 b1_B
+    T = np.zeros((7, 5), dtype=np.float64)
+    T[0, 0] = 1.0  # f_NL -> f_NL
+    T[1, 1] = 1.0  # A -> A (direct)
+    T[2, 2] = 1.0  # f_growth -> f_growth (passthrough)
+    T[3, 3] = 1.0  # b1_A -> b1_A (direct)
+    T[5, 4] = 1.0  # b1_B -> b1_B (direct)
+    T[4, 1] = db2A_dA  # b2_A <- A
+    T[4, 3] = db2_db1  # b2_A <- b1_A
+    T[6, 1] = db2B_dA  # b2_B <- A
+    T[6, 4] = db2_db1  # b2_B <- b1_B
+    tied_names = ("f_NL", "A", "f_growth", "b1_A", "b1_B")
+    tied_fid = {
+        "f_NL": float(theta_fid["f_NL"]),
+        "A": A,
+        "f_growth": float(theta_fid["f_growth"]),
+        "b1_A": b1A,
+        "b1_B": b1B,
     }
     return T, tied_names, tied_fid

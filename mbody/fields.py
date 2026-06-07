@@ -363,6 +363,30 @@ def band_power_multipole(delta, box, k_bins, ell, los_axis=0, dk=None):
     return mx.stack(bins)
 
 
+def cross_power_multipole(delta_a, delta_b, box, k_bins, ell, los_axis=0, dk=None):
+    """Differentiable redshift-space cross multipole P_ell^{ab}(k) (raw).
+
+    P_ell[b] = (2 ell + 1) (V / N^6) sum_{shell b} L_ell(mu) Re(a_k conj(b_k))
+    / count_b -- band_power_multipole with the auto power |delta_k|^2 replaced by
+    the cross power Re(a_k conj(b_k)) (the same substitution cross_power makes on
+    band_power). Reduces to cross_power at ell = 0 and to band_power_multipole when
+    delta_a is delta_b. Differentiable in both fields (the mu / Legendre grids are
+    constants), so it backs the redshift-space multi-tracer cross-spectrum data
+    vector. RAW estimator (carries the discrete-shell multipole leakage, which a
+    Fisher is invariant to). Returns an MLX vector.
+    """
+    N, L = box.n_mesh, box.box_size
+    if dk is None:
+        dk = box.k_fundamental
+    masks, counts = _bin_masks(box, k_bins, dk)
+    leg = mx.array(_legendre_weight(_mu_grid(box, los_axis), ell).astype(np.float32))
+    cross = mx.real(mx.fft.rfftn(delta_a) * mx.conj(mx.fft.rfftn(delta_b)))
+    weighted = leg * cross
+    norm = (2 * ell + 1) * L**3 / N**6
+    bins = [norm * mx.sum(mk * weighted) / c for mk, c in zip(masks, counts)]
+    return mx.stack(bins)
+
+
 def multipole_decoupling(box, k_bins, ells=(0, 2), los_axis=0, dk=None):
     """Per-bin inverse of the discrete-shell multipole mode-coupling matrix.
 

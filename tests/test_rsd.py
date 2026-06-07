@@ -96,6 +96,26 @@ def test_estimator_isotropic_quadrupole_vanishes():
     assert abs(float(P[2][lo].sum() / P[0][lo].sum())) < 0.06  # measured ~0.01
 
 
+def test_cross_power_multipole_reductions():
+    """cross_power_multipole(a, b, ell=0) == cross_power(a, b), and the auto case
+    cross_power_multipole(a, a, ell) == band_power_multipole(a, ell). Geometric, so
+    measured ~1e-7 (the ell=0 cross is exact; the auto match is the float32
+    abs**2-vs-Re(z conj z) floor)."""
+    from mbody import ic as IC
+
+    kbins = _kbins(BOX)
+    a = IC.linear_density(BOX, COSMO, seed=0, f_NL=0.0, backend="eh98")
+    b = IC.linear_density(BOX, COSMO, seed=1, f_NL=0.0, backend="eh98")
+    c0 = np.asarray(F.cross_power_multipole(a, b, BOX, kbins, 0, los_axis=LOS))
+    xp = np.asarray(F.cross_power(a, b, BOX, kbins))
+    assert np.allclose(c0, xp, rtol=1e-6, atol=0.0)
+    for el in (0, 2, 4):
+        auto = np.asarray(F.cross_power_multipole(a, a, BOX, kbins, el, los_axis=LOS))
+        bpm = np.asarray(F.band_power_multipole(a, BOX, kbins, el, los_axis=LOS))
+        rel = np.abs(auto / bpm - 1.0).max()
+        assert rel < 1e-5, f"ell={el} reduction rel {rel:.2e}"
+
+
 def test_interlacing_reduces_aliasing():
     """Interlacing removes the CIC power upturn near Nyquist."""
     box = config.BoxConfig(box_size=256.0, n_mesh=48, n_particles=48)

@@ -239,6 +239,10 @@ alone (both constrain the *product* `f_NL*b_phi` -- pinning `f_NL` needs a
   universality -> f_NL recovered, 2.7x multi-tracer gain). Two key subtleties: the
   degeneracy is invisible at `f_NL=0` (a product degeneracy), and the gain is
   shot-noise-limited. `docs/multitracer.md`, `pixi run {probe-multitracer,multitracer}`.
+  **Composed to redshift space** (auto/cross MULTIPOLES, `fields.cross_power_multipole`;
+  PM f_NL/A via the momentum-seeded adjoint): the conclusion is unchanged but the two
+  levers STACK -- the cancellation tightens `sigma(f_NL)` (~2.3-2.9x) AND the quadrupole
+  pins `f_growth` (2t 0.57->0.12). `pixi run {probe-rsd-multitracer,rsd-multitracer}`.
 - Leapfrog AD memory (reverse-mode grows with step count as the graph unrolls).
   RESOLVED via a reversible adjoint, NOT checkpointing: `mx.checkpoint` was
   measured to give no memory reduction here (the PM solve is near-linear, so

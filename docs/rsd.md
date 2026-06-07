@@ -99,7 +99,10 @@ degeneracy.
   arXiv:2302.09066). Pinning `f_NL` needs a `b_phi(b1)` relation (e.g.
   universality); multi-tracer *relaxes and robustifies* that prior and sharpens
   the products via sample-variance cancellation. That is the SPHEREx strategy, now
-  built and quantified in `docs/multitracer.md` (`pixi run multitracer`).
+  built and quantified in `docs/multitracer.md` (`pixi run multitracer`). The
+  **redshift-space multi-tracer** combines both levers -- the cancellation tightens
+  `sigma(f_NL)` and the quadrupole pins `f_growth` -- see the composition section of
+  `docs/multitracer.md` (`pixi run rsd-multitracer`).
 - The PM forecast reuses the **Gaussian (disconnected) mock covariance**; the PM
   nonlinearity enters the signal/Jacobian, not the covariance.
 
