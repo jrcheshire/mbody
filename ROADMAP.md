@@ -214,7 +214,8 @@ plane-parallel estimator (`fields.band_power_multipole` raw / `power_multipoles`
 decoupled) uses a FULL fft axis for the LOS, with a discrete-shell
 `multipole_decoupling` so it recovers continuum Kaiser (`P_0`,`P_2` to a few %;
 `P_4` is noise-limited at toy box sizes). `interlaced_density_contrast` removes the
-CIC aliasing upturn near Nyquist. The autodiff Fisher is extended to
+CIC aliasing upturn near Nyquist and is now the standard measurement painter for all
+P(k)/band-power diagnostics + Fisher Jacobians (the force solve keeps plain CIC). The autodiff Fisher is extended to
 `{f_NL,b1,b2,A,f_growth}` with linear `P_ell` data and a Gaussian mock block
 covariance; `f_NL`/`A` use the reversible adjoint with a momentum-seeded loss
 (`loss_uses_momentum`, since the redshift field depends on the final velocities).

@@ -36,7 +36,6 @@ from mbody import fields as F  # noqa: E402
 from mbody import ic as IC  # noqa: E402
 from mbody import bias as B  # noqa: E402
 from mbody import integrate as IN  # noqa: E402
-from mbody import painting as PA  # noqa: E402
 
 OUT = Path("outputs")
 OUT.mkdir(exist_ok=True)
@@ -50,7 +49,7 @@ NSEED = 16
 
 def pm_density(f_NL, seed):
     x, _ = IN.leapfrog(BOX, COSMO, TIME, seed=seed, f_NL=f_NL)
-    return PA.density_contrast(x, BOX)
+    return F.interlaced_density_contrast(x, BOX)
 
 
 def pm_power(f_NL, seed, kb, b2=B2):

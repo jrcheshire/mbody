@@ -113,6 +113,22 @@ def test_interlacing_reduces_aliasing():
     assert inter_up < plain_up - 0.15  # interlacing suppresses it
 
 
+def test_interlacing_matches_plain_cic_at_low_k():
+    """At low k interlacing is identity to plain CIC (measured ~6e-5). This is why
+    making interlacing the standard measurement painter leaves the f_NL signal and
+    the autodiff d ln P/d theta unchanged -- both live at low k, and the CIC window
+    cancels in the log-derivative regardless."""
+    box = config.BoxConfig(box_size=256.0, n_mesh=48, n_particles=48)
+    time = config.TimeStepping(z_init=0.05, z_final=0.0)
+    x, _ = IN.initial_state(box, COSMO, time, seed=3, backend="eh98", lpt_order=2)
+    k, Pp, _ = F.power_spectrum(PA.density_contrast(x, box), box, deconvolve_cic=True)
+    _, Pi, _ = F.power_spectrum(
+        F.interlaced_density_contrast(x, box), box, deconvolve_cic=True
+    )
+    lo = k < 0.1 * box.k_nyquist
+    assert np.all(np.abs(Pi[lo] / Pp[lo] - 1.0) < 1e-3)  # measured ~6e-5
+
+
 def test_linear_multipole_jacobian_matches_fd():
     """dP_ell/dtheta (autodiff) matches a matched-phase finite difference."""
     kbins = _kbins(BOX)
@@ -162,7 +178,7 @@ def test_redshift_adjoint_matches_replay():
 
     def redshift_bp(x, p):
         s = rsd.redshift_space_positions(x, p, box, COSMO, z=time.z_final, los_axis=LOS)
-        tr = B.local_bias_tracer(PA.density_contrast(s, box), b1, b2)
+        tr = B.local_bias_tracer(F.interlaced_density_contrast(s, box), b1, b2)
         return F.band_power_multipole(tr, box, kbins, ell, los_axis=LOS)[bin_i]
 
     def loss_theta(th):

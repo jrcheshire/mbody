@@ -28,7 +28,6 @@ from mbody import fields as F
 from mbody import ic as IC
 from mbody import bias as B
 from mbody import integrate as IN
-from mbody import painting as PA
 from mbody import fisher as FI
 
 COSMO = Cosmology()
@@ -157,7 +156,7 @@ def _pm_logP(theta, seed, kb):
         amplitude=mx.array(theta["A"]),
         lpt_order=2,
     )
-    delta = PA.density_contrast(x, BOX)
+    delta = F.interlaced_density_contrast(x, BOX)
     tracer = B.local_bias_tracer(delta, theta["b1"], theta["b2"])
     return np.asarray(mx.log(F.band_power(tracer, BOX, kb)), np.float64)
 
@@ -189,7 +188,7 @@ def test_adjoint_grad_ic_matches_replay():
 
     def loss_at(x, b):
         tracer = B.local_bias_tracer(
-            PA.density_contrast(x, BOX), THETA_FID["b1"], THETA_FID["b2"]
+            F.interlaced_density_contrast(x, BOX), THETA_FID["b1"], THETA_FID["b2"]
         )
         return mx.log(F.band_power(tracer, BOX, kb))[b]
 

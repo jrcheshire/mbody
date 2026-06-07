@@ -26,7 +26,6 @@ import numpy as np
 
 from mbody import fields as F
 from mbody import integrate as IG
-from mbody import painting as PA
 from mbody import rsd as RS
 from mbody.diagnostics import SnapshotRecorder, cross_correlation, particle_power
 
@@ -180,8 +179,8 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         x0, p0, box, cosmo, steps, snapshot=recorder, integrator=time.integrator
     )
 
-    ic_field = PA.density_contrast(x0, box)
-    final_field = PA.density_contrast(xf, box)
+    ic_field = F.interlaced_density_contrast(x0, box)
+    final_field = F.interlaced_density_contrast(xf, box)
 
     redshift_field = None
     if cfg.rsd.enabled:

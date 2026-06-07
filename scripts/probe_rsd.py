@@ -164,7 +164,7 @@ def probe_adjoint(box, cosmo, time, seed=2, los=0):
 
     def redshift_bp(x, p):
         s = rsd.redshift_space_positions(x, p, box, cosmo, z=time.z_final, los_axis=los)
-        tr = B.local_bias_tracer(PA.density_contrast(s, box), b1, b2)
+        tr = B.local_bias_tracer(F.interlaced_density_contrast(s, box), b1, b2)
         return F.band_power_multipole(tr, box, kbins, ell, los_axis=los)[bin_i]
 
     def loss_theta(th):

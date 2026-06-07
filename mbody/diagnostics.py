@@ -71,14 +71,22 @@ def cross_correlation(delta_a, delta_b, box, dk=None, kmin=None, kmax=None):
     return centers[good], r, counts[good]
 
 
-def particle_power(positions, box, **kwargs):
+def particle_power(positions, box, interlace=True, **kwargs):
     """P(k) of a particle set: CIC-paint to a density contrast, then measure.
 
-    Thin convenience over painting.density_contrast + fields.power_spectrum so a
-    run's measured spectrum comes from one call. Extra keywords (dk, kmin, kmax)
-    pass through to power_spectrum. Returns (k_centers, P_k, n_modes).
+    Thin convenience over the measurement painter + fields.power_spectrum so a
+    run's measured spectrum comes from one call. By default the field is painted
+    with interlacing (fields.interlaced_density_contrast) to suppress the CIC
+    mass-assignment aliasing near Nyquist; pass interlace=False for the plain CIC
+    field. Extra keywords (dk, kmin, kmax, deconvolve_cic) pass through to
+    power_spectrum. Returns (k_centers, P_k, n_modes).
     """
-    return F.power_spectrum(PA.density_contrast(positions, box), box, **kwargs)
+    delta = (
+        F.interlaced_density_contrast(positions, box)
+        if interlace
+        else PA.density_contrast(positions, box)
+    )
+    return F.power_spectrum(delta, box, **kwargs)
 
 
 def linear_growth_reference(a_arr, cosmo):

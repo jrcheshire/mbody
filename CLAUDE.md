@@ -124,7 +124,15 @@ tests/      unit + smoke tests
   `multipole_decoupling` so it matches continuum Kaiser). **`P_0`+`P_2` are
   science-grade; `P_4` is noise-limited at toy box sizes** (signal ~0.04 P0).
   `fields.interlaced_density_contrast` removes the CIC aliasing upturn near Nyquist
-  (validated); the driver uses it for the redshift-space field.
+  (validated). It is now the **standard measurement painter** for ALL P(k)/band-power
+  diagnostics and the Fisher Jacobians (real- and redshift-space), via
+  `diagnostics.particle_power(interlace=True)`, the driver's `ic_field`/`final_field`,
+  and `fisher.pm_{logP,multipole}_jacobian`; ONLY the force solve
+  (`forces.forces_on_particles`) keeps plain CIC. The f_NL signal (low k) and the
+  autodiff `d ln P/d theta` (window cancels in the log-derivative) are unchanged --
+  the win is honest high-k diagnostics. On the nonlinear z=0 field interlacing is a
+  small correction (genuine power dominates aliasing); the big gain is on
+  low-amplitude/clean fields.
 - Fisher: `fisher.{linear,pm}_multipole_jacobian` over `PARAM_NAMES_RSD =
   {f_NL,b1,b2,A,f_growth}` with LINEAR `P_ell` data (P2 can be negative -> no log)
   and a Gaussian mock block covariance (`multipole_gaussian_covariance`);

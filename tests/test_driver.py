@@ -21,7 +21,7 @@ from mbody.config import (
     TimeStepping,
 )
 from mbody import integrate as IG
-from mbody import painting as PA
+from mbody import fields as F
 
 
 def _cfg(**ic_kwargs):
@@ -62,8 +62,8 @@ def test_run_matches_loose_leapfrog():
         lpt_order=cfg.ic.lpt_order,
     )
     assert np.allclose(np.asarray(res.x), np.asarray(xf), atol=1e-4)
-    # The stored final field is the CIC density of those positions.
-    fld = PA.density_contrast(xf, cfg.box)
+    # The stored final field is the interlaced CIC density of those positions.
+    fld = F.interlaced_density_contrast(xf, cfg.box)
     assert np.allclose(np.asarray(res.final_field), np.asarray(fld), atol=1e-4)
 
 

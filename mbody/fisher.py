@@ -51,7 +51,6 @@ from mbody import cosmology as C
 from mbody import fields as F
 from mbody import ic as IC
 from mbody import integrate as IN
-from mbody import painting as PA
 from mbody import precision as P  # noqa: F401  (used by Jacobian builders)
 from mbody import rsd as RS
 
@@ -178,7 +177,7 @@ def pm_logP_jacobian(
         integrator=integrator,
         lpt_order=lpt_order,
     )
-    delta_final = mx.stop_gradient(PA.density_contrast(x_final, box))
+    delta_final = mx.stop_gradient(F.interlaced_density_contrast(x_final, box))
 
     # Downstream b1, b2 columns: cheap mx.grad at the fixed final field.
     tb = mx.array([fid_b1, fid_b2])
@@ -195,7 +194,9 @@ def pm_logP_jacobian(
     # IC columns f_NL, A: the shared trajectory adjoint, one sweep per bin.
     def make_loss(b):
         def loss_field(x):
-            tracer = B.local_bias_tracer(PA.density_contrast(x, box), fid_b1, fid_b2)
+            tracer = B.local_bias_tracer(
+                F.interlaced_density_contrast(x, box), fid_b1, fid_b2
+            )
             return mx.log(F.band_power(tracer, box, k_bins, dk=dk))[b]
 
         return loss_field
@@ -596,7 +597,7 @@ def pm_multipole_jacobian(
         s = RS.redshift_space_positions(
             xf, pf, box, cosmo, z=z_final, los_axis=los_axis, f_growth=t[2]
         )
-        tracer = B.local_bias_tracer(PA.density_contrast(s, box), t[0], t[1])
+        tracer = B.local_bias_tracer(F.interlaced_density_contrast(s, box), t[0], t[1])
         parts = [
             F.band_power_multipole(tracer, box, k_bins, el, los_axis=los_axis, dk=dk)
             for el in ells
@@ -623,7 +624,7 @@ def pm_multipole_jacobian(
                 f_growth=fid["f_growth"],
             )
             tracer = B.local_bias_tracer(
-                PA.density_contrast(s, box), fid["b1"], fid["b2"]
+                F.interlaced_density_contrast(s, box), fid["b1"], fid["b2"]
             )
             return F.band_power_multipole(
                 tracer, box, k_bins, ell, los_axis=los_axis, dk=dk

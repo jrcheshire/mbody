@@ -42,15 +42,21 @@ A particle-painted P(k) carries the **CIC mass-assignment window**
 `W(k) = prod_i sinc^2(k_i / 2 k_nyq)` (new `fields.cic_window`); a grid field
 (`ic.linear_density`) does not. So the raw transfer droops at high k for a
 non-physics reason -- deconvolve P_PM with `power_spectrum(deconvolve_cic=True)`.
+The painted field also uses **interlacing** (`fields.interlaced_density_contrast`,
+now the standard measurement painter) to cancel the leading CIC aliasing image.
+On the fully nonlinear z=0 field this is a *small* correction -- the genuine
+small-scale power dominates the aliasing near Nyquist -- so the deconvolved
+transfer below sits within the per-bin scatter of the plain-CIC values; the
+larger interlacing gain is on low-amplitude / clean fields (see `docs/rsd.md`).
 
 | k / k_nyq | T_raw | T_dec (CIC-deconvolved) |
 |----------:|------:|------------------------:|
 | 0.031     | 0.988 | **0.991 +/- 0.006**     |
-| 0.062     | 0.972 | **0.979 +/- 0.007**     |
-| 0.094     | 0.947 | 0.962                   |
-| 0.125     | 0.916 | 0.940                   |
-| 0.250     | 0.781 | 0.866                   |
-| 0.500     | 0.475 | 0.721                   |
+| 0.062     | 0.972 | **0.980 +/- 0.007**     |
+| 0.094     | 0.948 | 0.963                   |
+| 0.125     | 0.916 | 0.941                   |
+| 0.250     | 0.782 | 0.867                   |
+| 0.500     | 0.470 | 0.712                   |
 
 At the largest scales `T -> 1` (absolute growth + normalization, validated for the
 first time). The high-k droop is the coarse PM **under-resolving small scales**

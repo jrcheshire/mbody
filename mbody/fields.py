@@ -473,8 +473,9 @@ def interlaced_density_contrast(positions, box):
     aliasing contaminates the anisotropic signal most. A drop-in replacement for
     painting.density_contrast: returns a real (N, N, N) field, differentiable in
     positions. The CIC window W(k) suppression remains -- deconvolve it in the
-    estimator (deconvolve_cic) as usual. Used only by the estimator, never the
-    force solve.
+    estimator (deconvolve_cic) as usual. This is the standard measurement painter
+    for all P(k) / band-power diagnostics and Jacobians; the force solve
+    (forces.forces_on_particles) keeps plain CIC.
     """
     from mbody import painting as PA  # local import: painting must not import fields
 

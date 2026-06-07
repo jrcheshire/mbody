@@ -57,9 +57,13 @@ floor), so the science uses `P_0 + P_2`.
 `fields.interlaced_density_contrast` paints the particles twice (the second on a
 half-cell-shifted grid) and averages in Fourier space with the realigning phase,
 cancelling the leading CIC aliasing image (Sefusatti et al. 2016,
-arXiv:1512.07295). The driver uses it for the redshift-space field. Measured:
-near Nyquist the plain CIC power turns up to `P/P_lin ~ 1.19` (aliasing) while the
-interlaced estimator stays flat (`~0.87`); identical to plain at low k.
+arXiv:1512.07295). It is now the **standard measurement painter** for all P(k) /
+band-power diagnostics and the Fisher Jacobians (real- and redshift-space); only
+the force solve (`forces.forces_on_particles`) keeps plain CIC. Measured: near
+Nyquist the plain CIC power turns up to `P/P_lin ~ 1.19` (aliasing) while the
+interlaced estimator stays flat (`~0.87`); identical to plain at low k -- so the
+f_NL signal (low k) and the autodiff `d ln P / d theta` (the window cancels in the
+log-derivative) are unchanged, the win is honest high-k diagnostics.
 
 ## The Fisher: does the quadrupole help break the f_NL degeneracy?
 
