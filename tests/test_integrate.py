@@ -254,6 +254,23 @@ def test_checkpoint_grad_matches_replay():
     assert float(mx.max(mx.abs(g_cc - g_replay))) / den < 1e-4
 
 
+def test_recompute_cic_force_matches_eager():
+    # recompute_cic checkpoints ONLY the nonlinear CIC paint/read (not the linear
+    # solve), recomputing their stencil in the backward pass to cut peak memory
+    # (~18-22% off the adjoint, measured in scripts/probe_adjoint_memory.py). The
+    # gradient must equal the eager replay to the ~1e-6 scatter-add floor -- it is
+    # an exact recomputation, not an approximation. This is the reversible
+    # adjoint's default memory-bound force path.
+    t = TimeStepping(z_init=9.0, z_final=0.0, n_steps=4)
+    x0, p0 = IG.initial_state(SMALL, COSMO, t, seed=0)
+    ag = IG.a_grid(t)
+    g_replay = _traj_grad(FO.make_force_fn(SMALL), x0, p0, ag)
+    g_rc = _traj_grad(FO.make_force_fn(SMALL, recompute_cic=True), x0, p0, ag)
+    mx.eval(g_replay, g_rc)
+    den = float(mx.max(mx.abs(g_replay)))
+    assert float(mx.max(mx.abs(g_rc - g_replay))) / den < 1e-4
+
+
 def test_leapfrog_memory_mode_and_compiled_paths():
     # The leapfrog knobs run end-to-end and agree with the default path; the
     # 'adjoint' mode is a gradient strategy, not a forward mode, so leapfrog

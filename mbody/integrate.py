@@ -538,6 +538,7 @@ def _reversible_ic_grad(
     compiled,
     integrator,
     loss_uses_momentum=False,
+    recompute_cic=True,
 ):
     """Reversible-leapfrog adjoint: d loss_field(x_final[, p_final]) / d theta.
 
@@ -561,7 +562,7 @@ def _reversible_ic_grad(
     if integrator is None:
         integrator = time.integrator
     a_steps = a_grid(time, spacing)
-    force_fn = FO.make_force_fn(box, compiled=compiled)
+    force_fn = FO.make_force_fn(box, compiled=compiled, recompute_cic=recompute_cic)
 
     # Per-integrator steppers and the IC->state map. For BullFrog the trajectory
     # state is (x, v) in D-time, so ic_mom converts the IC momentum p0 -> v0 =
@@ -642,6 +643,7 @@ def adjoint_grad_fnl(
     compiled=False,
     integrator=None,
     lpt_order=2,
+    recompute_cic=True,
 ):
     """Gradient d loss_field(x_final) / d f_NL via the reversible-leapfrog adjoint.
 
@@ -662,7 +664,9 @@ def adjoint_grad_fnl(
     independent of the step count: the adjoint trades the unrolled autodiff graph
     (memory ~ grid x steps) for ~2x the compute (memory ~ grid). This is the
     lever for many-step / high-resolution gradients; mx.grad over `leapfrog`
-    (replay) is simpler but its memory grows with step x grid.
+    (replay) is simpler but its memory grows with step x grid. By default the CIC
+    paint/read are checkpointed (recompute_cic=True): ~18% less peak memory for an
+    exact gradient; pass recompute_cic=False to disable.
 
     Returns the gradient as a 0-d mx.array. For a vector statistic (a P(k) over
     bins) call once per component, with `loss_field` selecting that component;
@@ -683,7 +687,16 @@ def adjoint_grad_fnl(
         return [x0, p0]
 
     return _reversible_ic_grad(
-        loss_field, ic_fn, f_NL, box, cosmo, time, spacing, compiled, integrator
+        loss_field,
+        ic_fn,
+        f_NL,
+        box,
+        cosmo,
+        time,
+        spacing,
+        compiled,
+        integrator,
+        recompute_cic=recompute_cic,
     )
 
 
@@ -701,6 +714,7 @@ def adjoint_grad_ic(
     integrator=None,
     lpt_order=2,
     loss_uses_momentum=False,
+    recompute_cic=True,
 ):
     """Gradient of loss_field(x_final[, p_final]) w.r.t. the IC params (f_NL, A).
 
@@ -748,4 +762,5 @@ def adjoint_grad_ic(
         compiled,
         integrator,
         loss_uses_momentum=loss_uses_momentum,
+        recompute_cic=recompute_cic,
     )

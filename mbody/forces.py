@@ -128,7 +128,29 @@ def _compiled_force_fn(box):
     return mx.compile(_force)
 
 
-def make_force_fn(box, compiled=False, checkpoint=False):
+def _cic_checkpointed_force(box):
+    """forces_on_particles with the CIC paint and read each wrapped in
+    mx.checkpoint, so their nonlinear stencil/weight activations are recomputed in
+    the backward pass (from the positions the reversible adjoint reconstructs for
+    free) instead of stored on the tape. The FFT Poisson solve between them is left
+    un-checkpointed -- it is linear, so its VJP needs no saved forward activation
+    (which is why a whole-solve checkpoint was a no-op). Measured ~18% off the
+    force-solve VJP peak with an identical gradient. See probe_adjoint_memory.py.
+    """
+    paint_ck = mx.checkpoint(lambda xx: PA.density_contrast(xx, box))
+    read_ck = mx.checkpoint(
+        lambda fx, fy, fz, xx: PA.cic_read_vector(fx, fy, fz, xx, box)
+    )
+
+    def force(positions):
+        delta = paint_ck(positions)
+        gx, gy, gz = acceleration_field(delta, box)
+        return read_ck(gx, gy, gz, positions)
+
+    return force
+
+
+def make_force_fn(box, compiled=False, checkpoint=False, recompute_cic=False):
     """Build the per-step force callable f(positions) -> (n_particles, 3) accel.
 
     This is what the leapfrog calls once per step. Two orthogonal wrappers:
@@ -150,9 +172,20 @@ def make_force_fn(box, compiled=False, checkpoint=False):
       (integrate.adjoint_grad_fnl), not checkpointing. Kept as correct plumbing
       tied to TimeStepping.memory_mode. Compose order is checkpoint-of-compiled.
 
-    With both flags False this is exactly the eager `forces_on_particles`, so the
+    - `recompute_cic`: return a force whose CIC paint and read are each wrapped in
+      mx.checkpoint, recomputing their nonlinear stencil/weight activations in the
+      backward pass while leaving the linear FFT solve between them alone. Unlike
+      the whole-solve `checkpoint` above this DOES cut the reverse-mode peak (~18%
+      off the force-solve VJP, measured), because what gets saved-away is the
+      nonlinear CIC stencil, not the linear solve. Exact gradient; takes precedence
+      over `compiled`. The reversible adjoint uses it by default as the
+      memory-bound path. See scripts/probe_adjoint_memory.py.
+
+    With all flags False this is exactly the eager `forces_on_particles`, so the
     default leapfrog behaviour is unchanged.
     """
+    if recompute_cic:
+        return _cic_checkpointed_force(box)
     if compiled:
         fn = _compiled_force_fn(box)
     else:
