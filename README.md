@@ -1,5 +1,10 @@
 # M-body
 
+![license](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)
+![python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
+![platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)
+![built with MLX](https://img.shields.io/badge/built%20with-MLX-orange.svg)
+
 A differentiable particle-mesh (PM) N-body toy built on
 [MLX](https://github.com/ml-explore/mlx), Apple's array framework, run on
 Apple Silicon. "M" for Mac / MLX; "body" for N-body.
