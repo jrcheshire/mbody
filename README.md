@@ -1,5 +1,6 @@
 # M-body
 
+[![CI](https://github.com/jrcheshire/mbody/actions/workflows/ci.yml/badge.svg)](https://github.com/jrcheshire/mbody/actions/workflows/ci.yml)
 ![license](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)
