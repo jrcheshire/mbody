@@ -7,11 +7,12 @@ need only build a config and call this. The returned RunResult bundles the final
 state, the initial and final density fields, and an optional trajectory recorder,
 and knows how to render the standard dashboard and serialize itself.
 
-Honest config. The SimConfig enums reserve names for physics that is planned but
-not yet built -- integrator "fastpm"/"bullfrog" and lpt_order 2 (2LPT). The
-implemented baseline is integrator "exact" (exact-background leapfrog) and
-lpt_order 1 (Zel'dovich), which are the SimConfig defaults, so ``run(SimConfig())``
-works out of the box. Asking for an unimplemented option raises
+Honest config. SimConfig defaults name only implemented, validated physics:
+integrator "fastpm" (growth-corrected KDK) and lpt_order 2 (2LPT), so
+``run(SimConfig())`` runs that baseline out of the box. The simpler "exact"
+(exact-background leapfrog) and lpt_order 1 (Zel'dovich), and the 2LPT-accurate
+"bullfrog" drift-kick-drift, are all implemented and selectable.
+``_check_supported`` still guards any future reserved enum value, raising
 NotImplementedError rather than silently running something else.
 
 This driver runs the forward model. Gradients in f_NL use the dedicated
@@ -149,13 +150,16 @@ class RunResult:
 def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
     """Run the forward model specified by `cfg` (a SimConfig). Returns RunResult.
 
-    Builds Zel'dovich initial conditions from cfg.ic (seed, f_NL), evolves them
-    with the exact-background leapfrog over cfg.time, and measures the initial
-    and final CIC density. `backend` selects the linear-theory transfer ("camb"
-    or "eh98"). Set `record=True` (or pass a `recorder`) to capture the
-    trajectory for the growth history and the structure-formation animation --
-    this is off the autodiff path and costs a little memory per step, so it is
-    off by default. If cfg.rsd.enabled, the final particles are also mapped to
+    Builds LPT initial conditions from cfg.ic (seed, f_NL, lpt_order), evolves
+    them with the integrator named by cfg.time.integrator (default "fastpm")
+    over cfg.time, and measures the initial and final CIC density. `backend`
+    selects the linear-theory transfer ("camb" or "eh98"). `spacing` sets the
+    scale-factor step layout passed to IG.a_grid: "linear" (equal steps in a)
+    or "log" (equal steps in ln a). Set `record=True` (or pass a `recorder`) to
+    capture the trajectory for the growth history and the structure-formation
+    animation -- this is off the autodiff path and costs a little memory per
+    step, so it is off by default. If cfg.rsd.enabled, the final particles are
+    also mapped to
     redshift space and painted (with interlacing) into RunResult.redshift_field,
     so result.power_multipoles() returns the anisotropic P_0/P_2.
     """
