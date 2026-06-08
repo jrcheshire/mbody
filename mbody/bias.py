@@ -7,7 +7,8 @@ three-point, which vanishes). The Dalal et al. (2008) scale-dependent bias
 Delta b(k) ~ f_NL / k^2 is a property of *biased tracers*: an object whose
 abundance responds to the local small-scale density variance feels the
 long-wavelength potential phi that local f_NL couples to that variance, and phi =
-delta / M(k) with M(k) ~ k^2, hence the 1/k^2.
+delta / M(k) with M(k) proportional to k^2 T(k) D(z), hence the ~1/k^2 at large
+scales (where the transfer T -> 1).
 
 The smallest differentiable tracer that exhibits this is an Eulerian local
 quadratic bias

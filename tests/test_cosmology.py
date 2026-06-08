@@ -50,10 +50,11 @@ def test_eh98_anchor_regression():
 
 
 def test_transfer_low_k_limit():
-    # Every transfer function -> 1 as k -> 0.
-    for backend in ("eh98", "eh98_nowiggle", "eh98_zerobaryon", "camb"):
-        if backend == "camb":
-            pytest.importorskip("camb")
+    # Every EH98 transfer function -> 1 as k -> 0. (CAMB is excluded: it is
+    # self-normalized to T(1e-4) = 1 by construction, so the check is vacuous
+    # for it -- EH98-vs-CAMB agreement is covered by the anchor regression and
+    # the CCL cross-check instead.)
+    for backend in ("eh98", "eh98_nowiggle", "eh98_zerobaryon"):
         assert abs(C.transfer(1e-4, COSMO, backend=backend) - 1.0) < 2e-3
 
 

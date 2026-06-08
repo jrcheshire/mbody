@@ -87,7 +87,10 @@ def gaussian_random_field(box, cosmo, seed=0, z=0.0, backend="camb"):
     v_cell = (L / N) ** 3
     amp = np.sqrt(Pk / v_cell).astype(np.float32)
 
-    # White noise -> colour -> real space, all float32 on the GPU.
+    # White noise -> colour -> real space, all float32 on the GPU. (The handful
+    # of self-conjugate modes -- DC and the Nyquist corners -- are sqrt(2)
+    # mis-normalized by this standard recipe; that is 8 of N^3 modes, and the
+    # ensemble P(k) still recovers the input to <0.2%.)
     w = mx.random.normal((N, N, N), key=mx.random.key(seed))
     delta_k = mx.fft.rfftn(w) * mx.array(amp)
     delta = mx.fft.irfftn(delta_k, s=(N, N, N), axes=(0, 1, 2))
@@ -295,7 +298,8 @@ def cross_power(delta_a, delta_b, box, k_bins, dk=None):
 # Two finite-mesh subtleties, both validated rather than assumed (probe_rsd.py):
 #   * Line of sight MUST be a full fft axis (0 or 1), not the rfft axis (2): on
 #     the half-grid the kz = 0 plane has mu = 0 for a whole plane of modes, which
-#     skews the discrete shell-average of the Legendre weights badly.
+#     skews the discrete shell-average of the Legendre weights (a few percent for
+#     the even multipoles) -- so avoid it.
 #   * A thin shell samples solid angle non-uniformly, so the raw estimator leaks
 #     power between multipoles (<L_ell>_shell != 0). multipole_decoupling inverts
 #     that to recover the continuum multipoles for interpretation/validation; the

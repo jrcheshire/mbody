@@ -74,6 +74,11 @@ the native model's job). Universality is the clean `b_phi = 2 delta_c (b1 - 1)`.
 
 ## Results (measured; see `pixi run probe-multitracer`)
 
+The absolute `sigma` values below are specific to the probe configuration (mesh,
+box, number density, k-binning, seed count); the **ratios and the direction** are
+the transferable result, not the individual numbers. No test pins the exact
+figures, so re-run the probe to confirm them before quoting.
+
 **Detection regime (native, f_NL=0): sample-variance cancellation.** Two tracers
 tighten `sigma(f_NL)` (universality-tied) over one:
 - linear field: `836 -> 335` (**2.5x**),

@@ -136,7 +136,8 @@ def fastpm_kick_factor(a0, a1, a_r, cosmo):
 
     (3/2) Omega_m [G_f(a1) - G_f(a0)] / [a_r^2 E(a_r) g_f(a_r)], with the force
     evaluated at a_r. Applied to mbody's geometric acceleration g, it advances a
-    Zel'dovich mode's momentum exactly from G_f(a0) s to G_f(a1) s. The (3/2)
+    Zel'dovich mode's momentum from G_f(a0) s to G_f(a1) s (exact up to the
+    central-difference g_f used here, ~1e-9). The (3/2)
     Omega_m converts the geometric g into the FastPM force; reduces to the exact
     kick integrand (3/2) Omega_m / (a^2 E) as a1 -> a0.
     """

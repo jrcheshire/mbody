@@ -59,11 +59,12 @@ half-cell-shifted grid) and averages in Fourier space with the realigning phase,
 cancelling the leading CIC aliasing image (Sefusatti et al. 2016,
 arXiv:1512.07295). It is now the **standard measurement painter** for all P(k) /
 band-power diagnostics and the Fisher Jacobians (real- and redshift-space); only
-the force solve (`forces.forces_on_particles`) keeps plain CIC. Measured: near
-Nyquist the plain CIC power turns up to `P/P_lin ~ 1.19` (aliasing) while the
-interlaced estimator stays flat (`~0.87`); identical to plain at low k -- so the
-f_NL signal (low k) and the autodiff `d ln P / d theta` (the window cancels in the
-log-derivative) are unchanged, the win is honest high-k diagnostics.
+the force solve (`forces.forces_on_particles`) keeps plain CIC. Measured (at the
+probe config, L=256 Mpc/h, N=64): near Nyquist the plain CIC power turns up from
+aliasing while the interlaced estimator stays flat; the two are identical at low
+k -- so the f_NL signal (low k) and the autodiff `d ln P / d theta` (the window
+cancels in the log-derivative) are unchanged, the win is honest high-k
+diagnostics.
 
 ## The Fisher: does the quadrupole help break the f_NL degeneracy?
 
@@ -120,6 +121,7 @@ pixi run python -m pytest tests/test_rsd.py
 ## References
 
 - Kaiser 1987, MNRAS 227, 1 -- the redshift-space mapping.
-- Hamilton 1992 (arXiv:astro-ph/9308003) -- linear multipole coefficients.
+- Hamilton 1992, ApJ 385, L5 -- linear multipole coefficients (predates arXiv;
+  see also the Hamilton 1998 review, arXiv:astro-ph/9708102).
 - Sefusatti et al. 2016 (arXiv:1512.07295) -- interlacing / accurate estimators.
 - Barreira 2022 (arXiv:2205.05673) -- `b_phi`-`f_NL` degeneracy, why multi-tracer.

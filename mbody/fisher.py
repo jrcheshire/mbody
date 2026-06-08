@@ -32,9 +32,8 @@ Conventions, and why they make the forecast clean:
 - **Fisher F_ij = sum_b J_{b,i} J_{b,j} / Var[ln P_b]**, a diagonal-covariance
   weighted sum (modes in different k-bins are independent for a Gaussian field).
   Gaussian priors enter as 1/sigma^2 on the diagonal; fixed parameters drop their
-  row/column. This mirrors the forecast Fisher in ~/cmb/cmb-augr/augr/fisher.py
-  (J^T C^-1 J), not a Hessian-of-(-logP) at an MLE -- this toy has no
-  likelihood/optimizer.
+  row/column. This is a forecast Fisher (J^T C^-1 J), not a Hessian-of-(-logP)
+  at an MLE -- this toy has no likelihood/optimizer.
 
 Gradients are built bin-by-bin with reverse-mode mx.grad (one sweep of the
 scalar ln P_b returns the whole parameter row); forward-mode mx.jvp is WRONG
@@ -246,8 +245,7 @@ class FisherForecast:
     `covariance` (a full data covariance, e.g. the block covariance coupling
     redshift-space multipoles within a k-bin). The Jacobian assembly
     (linear_logP_jacobian / pm_logP_jacobian, or the multipole variants) is
-    deliberately decoupled from this pure linear-algebra object, mirroring
-    ~/cmb/cmb-augr/augr/fisher.py.
+    deliberately decoupled from this pure linear-algebra object.
 
     Parameters
     ----------
@@ -339,7 +337,7 @@ class FisherForecast:
         constant), so F can be ill-conditioned. Prewhitening with D = sqrt(diag F)
         gives F_w = D^-1 F D^-1 a unit diagonal and off-diagonals bounded by 1,
         dropping the condition number by orders of magnitude before the inverse;
-        the result is unwhitened back. Same trick as cmb-augr's per-bin solve.
+        the result is unwhitened back (a standard prewhitened-solve trick).
         """
         if self._inverse is None:
             if np.any(np.diag(self.fisher_matrix) <= 0):
@@ -430,6 +428,8 @@ class FisherForecast:
     def condition_number(self):
         """Condition number of the (free) Fisher matrix -- large = degenerate."""
         ev = np.linalg.eigvalsh(self.fisher_matrix)
+        if ev[0] <= 0.0:
+            return float("inf")  # singular (e.g. an unbroken product degeneracy)
         return float(ev[-1] / ev[0])
 
     def summary(self, name=""):
@@ -707,6 +707,11 @@ def multipole_gaussian_covariance(
 
     cov = np.cov(data, rowvar=False)
     if hartlap:
+        if n_mock <= n_data + 2:
+            raise ValueError(
+                f"n_mock={n_mock} too small for n_data={n_data}: the Hartlap "
+                "factor needs n_mock > n_data + 2 (else h <= 0). Increase n_mock."
+            )
         h = (n_mock - n_data - 2) / (n_mock - 1)
         cov = cov / h
     return cov
@@ -953,6 +958,11 @@ def _mt_mock_covariance(
     n_data = data.shape[1]
     cov = np.cov(data, rowvar=False)
     if hartlap:
+        if n_mock <= n_data + 2:
+            raise ValueError(
+                f"n_mock={n_mock} too small for n_data={n_data}: the Hartlap "
+                "factor needs n_mock > n_data + 2 (else h <= 0). Increase n_mock."
+            )
         h = (n_mock - n_data - 2) / (n_mock - 1)
         cov = cov / h
     return cov

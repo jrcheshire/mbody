@@ -391,8 +391,9 @@ def growth_factor_2(z, cosmo):
     D2 = -(3/7) D1^2 (Bouchet et al. 1995; the standard choice for 2LPT initial
     conditions, e.g. 2LPTic / Scoccimarro). Normalized consistently with the
     first-order growth_factor (D1(z=0) = 1), so the second-order Lagrangian
-    displacement scales as Psi = D1 Psi1 + D2 Psi2. The LCDM correction
-    Omega_m(a)^(-1/143) is < 0.5% for these parameters and is dropped.
+    displacement scales as Psi = D1 Psi1 + D2 Psi2. The dropped LCDM correction
+    Omega_m(a)^(-1/143) is < 0.9% at z=0 and ~2e-5 at the z_init=9 where 2LPT
+    initial conditions are set, so it is negligible on the IC code path.
     """
     D1 = growth_factor(z, cosmo)
     return -(3.0 / 7.0) * D1**2

@@ -15,8 +15,10 @@ to algebra,
 
     phi_k = -(source)_k / k^2,      g_k = -i k phi_k = i k (source)_k / k^2,
 
-with the k = 0 (mean) mode set to zero -- there is no net force on a periodic
-box, which is also momentum conservation.
+with the k = 0 (mean) mode of the force g vanishing (the i k factor is zero
+there) -- there is no net force on a periodic box, which is also momentum
+conservation. phi itself keeps its k = 0 offset, but only its gradient enters
+the dynamics.
 
 This module deliberately splits the *geometry* from the *cosmology*:
 
@@ -59,10 +61,12 @@ from mbody.lpt import _k_components  # the i k / k^2 kernel, shared with LPT
 def potential(delta, box):
     """Peculiar potential phi solving the dimensionless Poisson eq lap phi = delta.
 
-    In Fourier space phi_k = -delta_k / k^2 (the k = 0 mode set to zero).
-    Returns a real float32 (N, N, N) mesh. This is mainly a diagnostic /
-    visualization field -- the dynamics only needs its gradient, which
-    acceleration_field computes directly.
+    In Fourier space phi_k = -delta_k / k^2. The k = 0 (mean) mode is NOT
+    removed here (inv_k2 is set to 1 there to avoid 0/0), so phi carries an
+    overall offset proportional to the mean of delta. This is harmless: phi is
+    only a diagnostic / visualization field, and the dynamics use its gradient
+    (acceleration_field), whose k = 0 mode does vanish. Returns a real float32
+    (N, N, N) mesh.
     """
     N = box.n_mesh
     _, _, _, inv_k2 = _k_components(box)
@@ -83,7 +87,7 @@ def acceleration_field(delta, box):
     N = box.n_mesh
     ikx, iky, ikz, inv_k2 = _k_components(box)
     dk = mx.fft.rfftn(delta)
-    src = dk * inv_k2  # delta_k / k^2 (k = 0 already neutralized in inv_k2)
+    src = dk * inv_k2  # delta_k / k^2 (the k=0 force vanishes via ik_j=0 below)
     gx = mx.fft.irfftn(src * ikx, s=(N, N, N), axes=(0, 1, 2))
     gy = mx.fft.irfftn(src * iky, s=(N, N, N), axes=(0, 1, 2))
     gz = mx.fft.irfftn(src * ikz, s=(N, N, N), axes=(0, 1, 2))

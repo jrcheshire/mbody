@@ -14,6 +14,7 @@ from mbody.config import (
     InitialConditions,
     SimConfig,
     TimeStepping,
+    Tracer,
 )
 
 
@@ -83,3 +84,14 @@ def test_simconfig_composes_and_summarizes():
     text = cfg.summary()
     assert "M-body SimConfig" in text
     assert "f_NL=100.0" in text
+
+
+def test_tracer_validation():
+    Tracer()  # defaults are valid
+    Tracer(b1=1.5, b2=0.0, A=0.5)  # b2 = 0 is fine; only b1 != 0 and A > 0 required
+    with pytest.raises(ValueError):
+        Tracer(b1=0.0)  # no linear response to differentiate
+    with pytest.raises(ValueError):
+        Tracer(A=0.0)  # amplitude must be positive
+    with pytest.raises(ValueError):
+        Tracer(A=-1.0)
