@@ -25,6 +25,7 @@ import os
 
 import numpy as np
 
+from mbody import catalog as CAT
 from mbody import fields as F
 from mbody import integrate as IG
 from mbody import rsd as RS
@@ -65,6 +66,7 @@ class RunResult:
     backend: str
     recorder: object = None
     redshift_field: object = None
+    catalog: object = None
 
     def power(self, **kwargs):
         """Measured P(k) of the final field (k_centers, P_k, n_modes)."""
@@ -161,7 +163,9 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
     step, so it is off by default. If cfg.rsd.enabled, the final particles are
     also mapped to
     redshift space and painted (with interlacing) into RunResult.redshift_field,
-    so result.power_multipoles() returns the anisotropic P_0/P_2.
+    so result.power_multipoles() returns the anisotropic P_0/P_2. If
+    cfg.catalog.enabled, a forward-only galaxy mock catalog is Poisson-sampled from
+    the final (or redshift-space) field into RunResult.catalog (mbody.catalog).
     """
     _check_supported(cfg)
     box, cosmo, time, ic = cfg.box, cfg.cosmology, cfg.time, cfg.ic
@@ -199,6 +203,20 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         )
         redshift_field = F.interlaced_density_contrast(s, box)
 
+    catalog = None
+    if cfg.catalog.enabled:
+        # Sample from the redshift-space positions when RSD is on, else real space.
+        pos = s if cfg.rsd.enabled else xf
+        catalog = CAT.sample_from_positions(
+            pos,
+            box,
+            cfg.tracer,
+            cfg.catalog,
+            z=time.z_final,
+            f_NL=ic.f_NL,
+            ic_seed=ic.seed,
+        )
+
     return RunResult(
         config=cfg,
         x=xf,
@@ -208,4 +226,5 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
         backend=backend,
         recorder=recorder,
         redshift_field=redshift_field,
+        catalog=catalog,
     )

@@ -12,6 +12,7 @@ See README.md for orientation and ROADMAP.md for the staged plan.
 
 from mbody import (
     bias,
+    catalog,
     cosmology,
     diagnostics,
     driver,
@@ -27,6 +28,7 @@ from mbody import (
 )
 from mbody.config import (
     BoxConfig,
+    CatalogSampling,
     Cosmology,
     InitialConditions,
     RedshiftSpace,
@@ -34,6 +36,7 @@ from mbody.config import (
     TimeStepping,
     Tracer,
 )
+from mbody.catalog import Catalog
 from mbody.driver import RunResult, run
 
 __version__ = "0.1.0"
@@ -52,13 +55,16 @@ __all__ = [
     "diagnostics",
     "driver",
     "rsd",
+    "catalog",
     "Cosmology",
     "BoxConfig",
     "TimeStepping",
     "InitialConditions",
     "Tracer",
     "RedshiftSpace",
+    "CatalogSampling",
     "SimConfig",
     "run",
     "RunResult",
+    "Catalog",
 ]

@@ -294,6 +294,68 @@ class RedshiftSpace:
 
 
 @dataclass(frozen=True)
+class CatalogSampling:
+    """Forward-only galaxy-catalog sampling from the biased field (opt-in).
+
+    When enabled, the driver turns the final density field into a tracer
+    number-density field n(x) = nbar [1 + delta_h(x)] -- using the local quadratic
+    bias from `tracer` (mbody.bias.local_bias_tracer) -- and Poisson-samples a
+    discrete galaxy catalog from it, with positions placed uniformly inside each
+    mesh cell. This is a *mock generator* for systematics studies (e.g. a
+    field-level null test), not part of the autodiff path; the Poisson draw is
+    forward-only. Off by default (the honest-config invariant: a plain run measures
+    fields, not catalogs).
+
+    Whether the catalog is sampled in real or redshift space follows the existing
+    `RedshiftSpace.enabled` (real space by default).
+
+    Parameters
+    ----------
+    enabled : sample a catalog after the forward run.
+    nbar : target mean galaxy number density, in (Mpc/h)^-3. Sets the expected
+        count per cell nbar (L/n_mesh)^3 and hence the Poisson shot noise.
+    sampler : count-sampling distribution. Only "poisson" is implemented.
+    nonneg : how the Poisson intensity is kept non-negative where the biased field
+        dips below -1 (deep voids). Only "clip" is implemented -- floor 1 + delta_h
+        at 0, which preserves the perturbative bias and bispectrum (the realized
+        nbar drifts slightly above the target; it is reported, not renormalized).
+    draw_seed : seed for the numpy Poisson draw and the sub-cell placement. This
+        is a distinct stochastic axis from the IC phase seed (InitialConditions.seed):
+        hold the IC fixed and vary draw_seed to resample shot noise alone.
+    origin : observer offset (Mpc/h) added to every galaxy position, so the catalog
+        is observer-centered for a distant-observer survey geometry. (0, 0, 0) keeps
+        the box at the origin.
+    bin_index : redshift-shell label written as an int8 ``bin`` column (for
+        concatenating per-shell catalogs). -1 means unset (no bin column).
+    """
+
+    enabled: bool = False
+    nbar: float = 1e-3
+    sampler: str = "poisson"
+    nonneg: str = "clip"
+    draw_seed: int = 0
+    origin: tuple = (0.0, 0.0, 0.0)
+    bin_index: int = -1
+
+    _SAMPLERS = ("poisson",)
+    _NONNEG = ("clip",)
+
+    def __post_init__(self):
+        if self.nbar <= 0.0:
+            raise ValueError(f"nbar must be positive (got {self.nbar})")
+        if self.sampler not in self._SAMPLERS:
+            raise ValueError(
+                f"sampler must be one of {self._SAMPLERS} (got {self.sampler!r})"
+            )
+        if self.nonneg not in self._NONNEG:
+            raise ValueError(
+                f"nonneg must be one of {self._NONNEG} (got {self.nonneg!r})"
+            )
+        if len(self.origin) != 3:
+            raise ValueError(f"origin must have length 3 (got {self.origin!r})")
+
+
+@dataclass(frozen=True)
 class SimConfig:
     """Top-level configuration aggregating the sub-configs.
 
@@ -316,11 +378,12 @@ class SimConfig:
     ic: InitialConditions = field(default_factory=InitialConditions)
     tracer: Tracer = field(default_factory=Tracer)
     rsd: RedshiftSpace = field(default_factory=RedshiftSpace)
+    catalog: CatalogSampling = field(default_factory=CatalogSampling)
 
     def summary(self):
         """Human-readable one-screen summary, handy in scripts and logs."""
         c, b, t = self.cosmology, self.box, self.time
-        tr, rs = self.tracer, self.rsd
+        tr, rs, cat = self.tracer, self.rsd, self.catalog
         return (
             "M-body SimConfig\n"
             f"  cosmology: Omega_m={c.Omega_m} Omega_b={c.Omega_b} h={c.h} "
@@ -336,5 +399,7 @@ class SimConfig:
             f"lpt_order={self.ic.lpt_order} seed={self.ic.seed}\n"
             f"  tracer:    b1={tr.b1} b2={tr.b2} A={tr.A}\n"
             f"  rsd:       enabled={rs.enabled} los_axis={rs.los_axis} "
-            f"f_growth={rs.f_growth}"
+            f"f_growth={rs.f_growth}\n"
+            f"  catalog:   enabled={cat.enabled} nbar={cat.nbar} "
+            f"nonneg={cat.nonneg} draw_seed={cat.draw_seed} bin={cat.bin_index}"
         )

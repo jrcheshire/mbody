@@ -66,6 +66,7 @@ flake8 = "*"
 flake8-bugbear = "*"
 camb = ">=1.6.5,<2"
 pyccl = ">=3.3.4,<4"
+pyarrow = ">=24.0.0,<25"
 
 [tool.pixi.pypi-dependencies]
 mbody = { path = ".", editable = true }
@@ -88,3 +89,6 @@ multitracer = "python scripts/plot_multitracer_fisher.py"
 probe-multitracer = "python scripts/probe_multitracer.py"
 rsd-multitracer = "python scripts/plot_rsd_multitracer.py"
 probe-rsd-multitracer = "python scripts/probe_rsd_multitracer.py"
+gen-mock = "python scripts/gen_mock_catalog.py"
+probe-mock = "python scripts/probe_mock_validation.py"
+probe-mock-fnl = "python scripts/probe_mock_fnl.py"
