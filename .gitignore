@@ -8,3 +8,14 @@ dist/
 outputs/
 .pytest_cache/
 .DS_Store
+
+# Internal / not-for-public-release (kept locally, untracked)
+CLAUDE.md
+docs/bphi_science_path.md
+docs/review_findings.md
+
+# Generated write-up page + its build scripts (not shipped; page lives elsewhere)
+site/
+scripts/build_writeup.py
+scripts/_writeup_style.py
+scripts/diag_*.py

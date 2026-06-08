@@ -231,7 +231,8 @@ alone (both constrain the *product* `f_NL*b_phi` -- pinning `f_NL` needs a
 
 - Gradients w.r.t. cosmological parameters (autodiff Fisher).
 - A toy galaxy bias and exploration of `b_phi` -- the real SPHEREx lever; its
-  degeneracy with `f_NL` is the dominant systematic (see CLAUDE.md). **DONE (the
+  degeneracy with `f_NL` is the dominant systematic (see `docs/multitracer.md`).
+  **DONE (the
   multi-tracer Fisher capstone):** two tracers from the same field break part of
   the b_phi-f_NL degeneracy via sample-variance cancellation. Headlines (measured):
   cancellation tightens `sigma(f_NL)` 2.5x (linear) / 4.3x (PM); the explicit-b_phi
