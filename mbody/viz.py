@@ -42,13 +42,22 @@ def _slab_image(delta, box, thickness=None, axis=2):
     return (1.0 + d[tuple(sl)]).mean(axis=axis)
 
 
-def density_slice(delta, box, ax=None, thickness=None, axis=2, cmap="magma"):
+def density_slice(
+    delta, box, ax=None, thickness=None, axis=2, cmap="magma", smooth=None
+):
     """Render a log-density slab projection of a real field. Returns (fig, ax).
 
     Shows log10 of the slab-averaged 1 + delta, clipped at a small floor so empty
     regions do not blow up the log. Pass an existing `ax` to draw into a panel.
+    `smooth` (sigma in cells), if set, applies a periodic Gaussian smoothing to
+    the projected slab before the log -- a display-only convenience that tames
+    the ~1-particle-per-cell discreteness texture without altering any physics.
     """
     img = _slab_image(delta, box, thickness=thickness, axis=axis)
+    if smooth:
+        from scipy.ndimage import gaussian_filter
+
+        img = gaussian_filter(img, sigma=smooth, mode="wrap")
     img = np.log10(np.clip(img, 1e-2, None))
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 5))
