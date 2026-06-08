@@ -11,6 +11,10 @@ dependencies = [
     "mlx",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jrcheshire/mbody"
+Repository = "https://github.com/jrcheshire/mbody"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -41,7 +45,6 @@ flake8 = "*"
 flake8-bugbear = "*"
 camb = ">=1.6.5,<2"
 pyccl = ">=3.3.4,<4"
-plotly = ">=6.8.0,<7"
 
 [tool.pixi.pypi-dependencies]
 mbody = { path = ".", editable = true }
@@ -64,4 +67,3 @@ multitracer = "python scripts/plot_multitracer_fisher.py"
 probe-multitracer = "python scripts/probe_multitracer.py"
 rsd-multitracer = "python scripts/plot_rsd_multitracer.py"
 probe-rsd-multitracer = "python scripts/probe_rsd_multitracer.py"
-writeup = "python scripts/build_writeup.py"
