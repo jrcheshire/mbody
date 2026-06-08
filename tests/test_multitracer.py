@@ -26,6 +26,7 @@ and are not relaxed without a measured basis. Gradients are reverse-mode mx.grad
 
 import numpy as np
 import mlx.core as mx
+import pytest
 
 from mbody.config import BoxConfig, Cosmology, TimeStepping
 from mbody import fields as F
@@ -614,3 +615,135 @@ def test_rsd_multitracer_headline_cancellation_and_quadrupole():
     assert fc1_q.sigma("f_growth") < 0.5 * fc1_m.sigma(
         "f_growth"
     )  # quadrupole pins f_growth
+
+
+# --- coverage closures (Stage-2 review) -----------------------------------------
+
+
+def test_mock_covariance_rejects_too_few_mocks():
+    # The Hartlap factor h = (n_mock - n_data - 2)/(n_mock - 1) flips sign when
+    # n_mock is too small; the builder must raise rather than silently return a
+    # sign-flipped (Fisher-corrupting) covariance.
+    kb = _kb(BOX, ns=(1, 2, 3))  # n_data = 3 * 3 = 9 for the multi-tracer vector
+    with pytest.raises(ValueError):
+        FI.multitracer_gaussian_covariance(
+            BOX, COSMO, THETA, kb, N_A, N_B, n_mock=8, backend=BACKEND
+        )
+
+
+def test_universality_native_tie_matches_direct_jacobian():
+    # J_tied = J_free @ T equals directly differentiating the universality-tied
+    # NATIVE (b2-sourced) model. Unlike the explicit-b_phi tie, the native (and
+    # RSD) ties carry the A-coupled cross-term db2/dA, so they get their own check.
+    box = BoxConfig(box_size=512.0, n_mesh=32, n_particles=32)
+    kb = _kb(box, ns=(1, 2, 3, 4, 6))
+    th = FI.universality_fiducial(30.0, 1.0, 1.5, 2.5, box, COSMO, backend=BACKEND)
+    Jf, _ = FI.linear_multitracer_jacobian(box, COSMO, th, kb, seed=0, backend=BACKEND)
+    T, names, _ = FI.universality_tie_matrix(th, box, COSMO, backend=BACKEND)
+    Jt = Jf @ T
+
+    def tied_vec(f_NL, A, b1A, b1B, seed):
+        delta = A * IC.linear_density(box, COSMO, seed=seed, f_NL=f_NL, backend=BACKEND)
+        b2A = FI.universality_b2(b1A, box, COSMO, A=A, backend=BACKEND)
+        b2B = FI.universality_b2(b1B, box, COSMO, A=A, backend=BACKEND)
+        hA = B.local_bias_tracer(delta, b1A, b2A)
+        hB = B.local_bias_tracer(delta, b1B, b2B)
+        return np.asarray(FI._multitracer_vector(hA, hB, box, kb, None), np.float64)
+
+    base = [th["f_NL"], th["A"], th["b1_A"], th["b1_B"]]
+    steps = [5.0, 1e-2, 1e-2, 1e-2]
+    for k, (nm, st) in enumerate(zip(names, steps)):
+        hi, lo = list(base), list(base)
+        hi[k] += st
+        lo[k] -= st
+        fd = (tied_vec(*hi, 0) - tied_vec(*lo, 0)) / (2 * st)
+        assert _col_err(Jt[:, k], fd) < 5e-3, f"tied col {nm}"
+
+
+def test_universality_rsd_tie_matches_direct_jacobian():
+    # The redshift-space sibling of the native tie check: the 7x5 tie with the
+    # f_growth passthrough. J_tied = J_free @ T vs direct differentiation of the
+    # tied redshift-space multipole model.
+    box = BoxConfig(box_size=512.0, n_mesh=32, n_particles=32)
+    kb = _kb(box, ns=(1, 2, 3, 4, 6))
+    th = FI.universality_rsd_fiducial(
+        30.0, 1.0, 1.0, 1.5, 2.5, box, COSMO, backend=BACKEND
+    )
+    Jf, _ = FI.linear_multitracer_multipole_jacobian(
+        box, COSMO, th, kb, ells=ELLS, los_axis=LOS, seed=0, backend=BACKEND
+    )
+    T, names, _ = FI.universality_rsd_tie_matrix(th, box, COSMO, backend=BACKEND)
+    Jt = Jf @ T
+    f_lin = C.growth_rate(0.0, COSMO)
+
+    def tied_vec(f_NL, A, fg, b1A, b1B, seed):
+        delta = A * IC.linear_density(box, COSMO, seed=seed, f_NL=f_NL, backend=BACKEND)
+        b2A = FI.universality_b2(b1A, box, COSMO, A=A, backend=BACKEND)
+        b2B = FI.universality_b2(b1B, box, COSMO, A=A, backend=BACKEND)
+        hA = FI._redshift_tracer_linear(delta, box, b1A, b2A, fg * f_lin, LOS)
+        hB = FI._redshift_tracer_linear(delta, box, b1B, b2B, fg * f_lin, LOS)
+        return np.asarray(
+            FI._mt_multipole_vector(hA, hB, box, kb, ELLS, LOS, None), np.float64
+        )
+
+    base = [th["f_NL"], th["A"], th["f_growth"], th["b1_A"], th["b1_B"]]
+    steps = [5.0, 1e-2, 1e-2, 1e-2, 1e-2]
+    for k, (nm, st) in enumerate(zip(names, steps)):
+        hi, lo = list(base), list(base)
+        hi[k] += st
+        lo[k] -= st
+        fd = (tied_vec(*hi, 0) - tied_vec(*lo, 0)) / (2 * st)
+        assert _col_err(Jt[:, k], fd) < 5e-3, f"tied col {nm}"
+
+
+def test_pm_multitracer_multipole_jacobian_ic_columns_match_replay():
+    # The assembled PM redshift-space multi-tracer multipole Jacobian (the
+    # composition-capstone function) is otherwise uncalled: exercise its IC
+    # (f_NL, A) column routing end to end against replay mx.grad, for the AA/AB/BB
+    # quadrupole pivot bins (both autodiff -> agree to the CIC scatter floor).
+    kb = _kb(BOX)
+    nb = len(kb)
+    J, _ = FI.pm_multitracer_multipole_jacobian(
+        BOX,
+        COSMO,
+        TIME_PM,
+        THETA_RSD,
+        kb,
+        ells=ELLS,
+        los_axis=LOS,
+        seed=0,
+        backend=BACKEND,
+    )
+
+    def loss_at(x, p, d):
+        s = RS.redshift_space_positions(
+            x,
+            p,
+            BOX,
+            COSMO,
+            z=TIME_PM.z_final,
+            los_axis=LOS,
+            f_growth=THETA_RSD["f_growth"],
+        )
+        field = F.interlaced_density_contrast(s, BOX)
+        hA = B.local_bias_tracer(field, THETA_RSD["b1_A"], THETA_RSD["b2_A"])
+        hB = B.local_bias_tracer(field, THETA_RSD["b1_B"], THETA_RSD["b2_B"])
+        return FI._mt_multipole_vector(hA, hB, BOX, kb, ELLS, LOS, None)[d]
+
+    def replay(tv, d):
+        x, p = IN.leapfrog(
+            BOX,
+            COSMO,
+            TIME_PM,
+            seed=0,
+            f_NL=tv[0],
+            amplitude=tv[1],
+            backend=BACKEND,
+            lpt_order=2,
+        )
+        return loss_at(x, p, d)
+
+    tv0 = mx.array([THETA_RSD["f_NL"], THETA_RSD["A"]])
+    for d in (nb, 3 * nb, 5 * nb):  # AA, AB, BB quadrupole pivot bins
+        g_rep = np.asarray(mx.grad(lambda tv, d=d: replay(tv, d))(tv0))
+        assert _col_err(J[d, 0:2], g_rep) < 1e-3, f"IC cols d={d}"
