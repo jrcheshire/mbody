@@ -52,9 +52,9 @@ mlx = "*"
 
 [tool.pixi.tasks]
 test = "pytest tests/ -v"
-format = "black --skip-string-normalization mbody scripts tests"
-check-format = "black --check --skip-string-normalization mbody scripts tests"
-lint = "flake8 mbody scripts tests"
+format = "black --skip-string-normalization mbody scripts tests examples"
+check-format = "black --check --skip-string-normalization mbody scripts tests examples"
+lint = "flake8 mbody scripts tests examples"
 probe = "python scripts/probe_ad_fft.py"
 fisher = "python scripts/plot_fisher.py"
 convergence = "python scripts/plot_convergence.py"
