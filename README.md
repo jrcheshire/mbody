@@ -37,6 +37,38 @@ code (see "Scope").
   [FlowPM](https://github.com/DifferentiableUniverseInitiative/flowpm), or
   DISCO-DJ.
 
+## Features
+
+- **Cosmology backend** (`mbody.cosmology`) -- flat-LCDM background `E(z)`, linear
+  growth `D(z)` / `f(z)`, and the linear power spectrum from either CAMB (default)
+  or the Eisenstein & Hu (1998) fitting formula; cross-checked against CCL.
+- **Initial conditions** (`mbody.ic`) -- Gaussian random fields and local-`f_NL`
+  ICs (`phi = phi_G + f_NL (phi_G^2 - <phi_G^2>)`), differentiable in `f_NL`, plus
+  analytic squeezed-bispectrum templates.
+- **LPT displacement** (`mbody.lpt`) -- first-order (Zel'dovich) and second-order
+  (2LPT) displacement fields.
+- **Particle-mesh dynamics** (`mbody.painting`, `mbody.forces`, `mbody.integrate`)
+  -- CIC paint / read, an FFT Poisson force solve, and three leapfrog integrators:
+  exact-background, FastPM (growth-corrected), and BullFrog (2LPT-accurate).
+- **Reversible adjoint** (`integrate.adjoint_grad_ic` / `_fnl`) -- O(1)-in-steps
+  memory gradients of summary statistics w.r.t. the IC parameters (`f_NL`, the
+  linear amplitude `A`), the lever that keeps deep PM runs differentiable.
+- **Redshift-space distortions** (`mbody.rsd`, `mbody.fields`) -- the line-of-sight
+  velocity map, Kaiser multipoles (`P_0`, `P_2`) with discrete-shell decoupling,
+  and CIC interlacing.
+- **Summary statistics** (`mbody.fields`, `mbody.diagnostics`) -- `P(k)`,
+  cross-power / propagator `r(k)`, the Scoccimarro bispectrum, the one-point PDF,
+  skewness, and growth history.
+- **Biased tracers** (`mbody.bias`) -- a local quadratic-bias tracer and the Dalal
+  scale-dependent-bias reference (both shape and absolute amplitude).
+- **Autodiff Fisher forecasts** (`mbody.fisher`) -- forecasts over
+  `{f_NL, b1, b2, A, f_growth}`, including redshift-space multipoles and
+  multi-tracer sample-variance cancellation (the `b_phi`-`f_NL` capstone).
+- **Run driver, diagnostics, visualization** (`mbody.driver`, `mbody.diagnostics`,
+  `mbody.viz`) -- one `run(SimConfig) -> RunResult` entry point that measures,
+  renders a multi-panel dashboard, and serializes itself; an optional matplotlib
+  layer kept off the import and hot paths.
+
 ## Install
 
 ```bash
@@ -77,14 +109,29 @@ k, Pk, n_modes = result.power()           # measured P(k) of the final field
 result.dashboard(out="outputs/run.png")   # multi-panel diagnostic figure
 ```
 
+## Documentation
+
+- **[`docs/api.md`](docs/api.md)** -- a tour of the public API, module by module.
+- **[`examples/`](examples/)** -- short, commented, runnable end-to-end scripts:
+  a quickstart, the autodiff `dlnP/df_NL` headline, a Fisher forecast, and
+  redshift-space multipoles.
+- Topic notes in [`docs/`](docs/): the BullFrog integrator
+  ([`bullfrog.md`](docs/bullfrog.md)), redshift-space distortions
+  ([`rsd.md`](docs/rsd.md)), the multi-tracer capstone
+  ([`multitracer.md`](docs/multitracer.md)), the external convergence cross-check
+  ([`convergence_crosscheck.md`](docs/convergence_crosscheck.md)), and the
+  as-built architecture ([`architecture-plan.md`](docs/architecture-plan.md)).
+- [`ROADMAP.md`](ROADMAP.md) -- the staged build plan and validation history.
+
 ## Layout
 
 ```
 mbody/      package: cosmology, ICs, LPT, PM force + integrators, painting,
             statistics, RSD, the autodiff Fisher, and the run driver
-scripts/    runnable experiments and demos (probe_*, plot_*)
+examples/   short, commented end-to-end usage examples (start here)
+scripts/    richer experiments and figure-making demos (probe_*, plot_*)
 tests/      unit and validation tests
-docs/       notes on the integrators, RSD, multi-tracer, and the cross-checks
+docs/       the API reference and topic notes (integrators, RSD, multi-tracer)
 ```
 
 ## Relationship to SPHEREx
