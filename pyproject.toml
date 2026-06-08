@@ -4,6 +4,27 @@ version = "0.1.0"
 description = "M-body: a differentiable particle-mesh N-body toy in MLX on Apple Silicon, targeting autodiff dlnP(k)/df_NL"
 requires-python = ">=3.11"
 authors = [{ name = "James Cheshire", email = "cheshire@caltech.edu" }]
+readme = "README.md"
+keywords = [
+    "cosmology",
+    "n-body",
+    "particle-mesh",
+    "differentiable",
+    "autodiff",
+    "mlx",
+    "large-scale-structure",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "numpy",
     "scipy",
