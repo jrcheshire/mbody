@@ -49,23 +49,47 @@ macOS on Apple Silicon only (MLX requirement); the pixi platform is pinned to
 ## Run
 
 ```bash
+pixi run test     # the test suite
 pixi run probe    # day-0 feasibility: does autodiff flow through mx.fft?
-pixi run test     # smoke tests (package import + MLX array / grad)
 pixi run format   # black --skip-string-normalization
 pixi run lint     # flake8
+```
+
+Headline demos (each writes figures under `outputs/`):
+
+```bash
+pixi run fisher            # linear-vs-PM autodiff Fisher over {f_NL, b1, b2, A}
+pixi run convergence       # transfer / propagator / growth vs analytic linear theory
+pixi run external-ccl      # cross-check the cosmology layer against CCL
+pixi run bullfrog          # the BullFrog integrator probe
+pixi run rsd               # redshift-space multipoles + the f_growth Fisher
+pixi run multitracer       # the b_phi-f_NL multi-tracer cancellation capstone
+pixi run rsd-multitracer   # the redshift-space multi-tracer composition
+```
+
+A whole run from a single config:
+
+```python
+import mbody
+
+result = mbody.run(mbody.SimConfig())     # FastPM + 2LPT defaults, Gaussian ICs
+k, Pk, n_modes = result.power()           # measured P(k) of the final field
+result.dashboard(out="outputs/run.png")   # multi-panel diagnostic figure
 ```
 
 ## Layout
 
 ```
-mbody/      package: PM kernels, ICs, statistics (being built; see ROADMAP)
-scripts/    runnable experiments and demos (probe_ad_fft.py is the first)
-tests/      unit / smoke tests
+mbody/      package: cosmology, ICs, LPT, PM force + integrators, painting,
+            statistics, RSD, the autodiff Fisher, and the run driver
+scripts/    runnable experiments and demos (probe_*, plot_*)
+tests/      unit and validation tests
+docs/       notes on the integrators, RSD, multi-tracer, and the cross-checks
 ```
 
 ## Relationship to SPHEREx
 
-A sibling of the SPHEREx L4 cosmology work in `~/spherex/`. It is **not** on
+A sibling of the author's SPHEREx L4 cosmology work. It is **not** on
 the critical path: the production `f_NL` inference path is DasResultat
 (Cartesian `P_l(k)`, Cobaya) fed by the estimators (pypower / SuperFaB), with
 an SFB emulator for cheap likelihoods. M-body exists to build intuition for

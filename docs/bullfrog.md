@@ -69,7 +69,7 @@ which we verified algebraically and pin in a unit test to 1e-16.
 | single linear mode growth | exactly `D(a)` at any step count (1, 2, 4, 8 steps) |
 | converges to the FastPM field (12 steps) | agree to the scatter-add floor |
 | reversibility (forward then reverse) | reconstructs `x0` to ~1e-6 cells |
-| adjoint vs replay `mx.grad` | agree to ~3e-7 |
+| adjoint vs replay `mx.grad` | agree to ~1e-6 (scatter-add floor) |
 
 ## The advantage is resolution-gated (the honest finding)
 
