@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (macos-14, Apple Silicon)
+    # MLX is Apple-Silicon only and the pixi platform is pinned to osx-arm64,
+    # so CI runs on an arm64 macOS runner.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          locked: true
+      - run: pixi run check-format
+      - run: pixi run lint
+      - run: pixi run test
