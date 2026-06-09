@@ -8,7 +8,8 @@ so it converges to the exact solution in fewer steps. Since reverse-mode AD memo
 in mbody scales as grid x steps, an integrator that needs fewer steps for the same
 accuracy is a direct lever for higher-resolution gradients.
 
-`fastpm` remains the SimConfig default; BullFrog is a selectable option.
+BullFrog is the SimConfig default (the default `n_mesh >= 64` is in the regime where
+its fewer-steps advantage holds); `fastpm` remains a step-count-robust option.
 
 ## The scheme
 

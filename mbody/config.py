@@ -151,13 +151,14 @@ class TimeStepping:
     n_steps : number of leapfrog PM steps between them. More steps = more
         accurate growth, but reverse-mode autodiff memory scales with this
         count because the graph unrolls over every step.
-    integrator : time-stepping scheme. "fastpm" (default) uses growth-corrected
-        kick/drift kernels that get linear growth right at any step count;
-        "exact" is the exact-background-integral KDK leapfrog (a ~2% growth
-        deficit at low step count); "bullfrog" is a 2LPT-accurate, time-reversible
-        drift-kick-drift integrator (Rampf, List & Hahn 2024) whose single step is
-        second-order accurate, so it needs fewer steps for the same accuracy. All
-        three are implemented; fastpm stays the default.
+    integrator : time-stepping scheme. "bullfrog" (default) is a 2LPT-accurate,
+        time-reversible drift-kick-drift integrator (Rampf, List & Hahn 2024) whose
+        single step is second-order accurate, so it needs fewer steps for the same
+        accuracy at the default mesh resolution (its advantage is resolution-gated
+        and holds at n_mesh >= 64); "fastpm" uses growth-corrected kick/drift kernels
+        that get linear growth right at any step count; "exact" is the
+        exact-background-integral KDK leapfrog (a ~2% growth deficit at low step
+        count). All three are implemented.
     memory_mode : autodiff memory strategy. "replay" keeps the full unrolled
         graph; "checkpoint" recomputes each step in the backward pass to save
         memory; "adjoint" reconstructs state by reverse-time integration
@@ -167,7 +168,7 @@ class TimeStepping:
     z_init: float = 9.0
     z_final: float = 0.0
     n_steps: int = 10
-    integrator: str = "fastpm"
+    integrator: str = "bullfrog"
     memory_mode: str = "replay"
 
     _INTEGRATORS = ("exact", "fastpm", "bullfrog")

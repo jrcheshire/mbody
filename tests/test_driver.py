@@ -35,11 +35,11 @@ def _cfg(**ic_kwargs):
 
 def test_config_defaults_are_implemented():
     # The honest-config invariant: SimConfig() defaults name only built physics.
-    # After FastPM + 2LPT landed, the defaults are the better physics and run().
+    # The defaults are the 2LPT-accurate baseline (bullfrog + 2LPT) and run().
     cfg = SimConfig()
-    assert cfg.time.integrator == "fastpm"
+    assert cfg.time.integrator == "bullfrog"
     assert cfg.ic.lpt_order == 2
-    # the default physics (fastpm + 2LPT) runs out of the box -- small box here
+    # the default physics (bullfrog + 2LPT) runs out of the box -- small box here
     # only for test speed.
     small = SimConfig(
         box=BoxConfig(box_size=200.0, n_mesh=16, n_particles=16),

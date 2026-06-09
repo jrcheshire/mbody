@@ -66,7 +66,7 @@ def parse_args(argv=None):
     p.add_argument("--z", type=float, default=0.0, help="shell redshift (z_final)")
     p.add_argument("--z-init", type=float, default=9.0, help="initial redshift")
     p.add_argument("--n-steps", type=int, default=10, help="PM steps")
-    p.add_argument("--integrator", default="fastpm", help="exact|fastpm|bullfrog")
+    p.add_argument("--integrator", default="bullfrog", help="exact|fastpm|bullfrog")
     p.add_argument("--lpt-order", type=int, default=2, help="1 or 2")
     p.add_argument("--nbar", type=float, default=1e-3, help="number density (Mpc/h)^-3")
     p.add_argument("--b1", type=float, default=1.5, help="linear bias")

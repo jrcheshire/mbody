@@ -1,6 +1,6 @@
 """Example 1 -- a whole differentiable PM run from a single config.
 
-Builds Gaussian initial conditions, evolves them with the FastPM + 2LPT defaults
+Builds Gaussian initial conditions, evolves them with the BullFrog + 2LPT defaults
 from z = 9 to z = 0, and measures the final field: its power spectrum, how well it
 still correlates with the initial conditions, and a diagnostic dashboard figure.
 
@@ -13,7 +13,7 @@ import mbody
 
 os.makedirs("outputs", exist_ok=True)
 
-# A small, fast configuration. SimConfig() defaults to FastPM + 2LPT, z 9 -> 0;
+# A small, fast configuration. SimConfig() defaults to BullFrog + 2LPT, z 9 -> 0;
 # here we shrink the mesh and step count so the example runs in seconds.
 cfg = mbody.SimConfig(
     box=mbody.BoxConfig(box_size=256.0, n_mesh=64, n_particles=64),
