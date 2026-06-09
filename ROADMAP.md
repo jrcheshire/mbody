@@ -178,12 +178,12 @@ driver ties the config to it.
   itself (`dashboard`, `save`). `scripts/run_demo.py` is the headline; the inline
   growth / animation in `plot_growth.py` and `animate_pm.py` now comes from this
   shared layer.
-- Honest config: SimConfig defaults name only built physics. With FastPM + 2LPT
-  now implemented (Steps 2/3), the defaults are `integrator="fastpm"` and
-  `lpt_order=2` (the better physics, validated); `"exact"` and `lpt_order=1`
-  remain available. `"bullfrog"` is now also implemented (see below), so all three
-  integrator enum values run. `scripts/compare_integrators.py` shows the
-  exact-vs-fastpm growth accuracy and ZA-vs-2LPT skewness.
+- Honest config: SimConfig defaults name only built physics. The defaults are
+  `integrator="bullfrog"` and `lpt_order=2` (the 2LPT-accurate, validated baseline;
+  see the BullFrog section below); `"fastpm"`, `"exact"`, and `lpt_order=1` remain
+  available, so all three integrator enum values run.
+  `scripts/compare_integrators.py` shows the exact-vs-fastpm growth accuracy and
+  ZA-vs-2LPT skewness.
 
 ## BullFrog integrator  [done]
 
@@ -201,8 +201,9 @@ fewer-steps advantage over FastPM is realized only when the force is resolved
 enough to carry the second-order mode coupling -- clear at `n_mesh=64`
 (~3x fewer steps for the same large-scale `r(k)`), absent at `n_mesh=32` (coarse
 CIC force), though it always converges correctly and beats the exact-background
-leapfrog. fastpm stays the default. `scripts/probe_bullfrog.py` (`pixi run
-bullfrog`), `docs/bullfrog.md`.
+leapfrog. BullFrog is now the SimConfig default (the default `n_mesh=128` is in the
+regime where its advantage holds); `fastpm` remains a step-count-robust option.
+`scripts/probe_bullfrog.py` (`pixi run bullfrog`), `docs/bullfrog.md`.
 
 ## Redshift-space distortions  [done]
 

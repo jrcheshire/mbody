@@ -110,7 +110,7 @@ A whole run from a single config:
 ```python
 import mbody
 
-result = mbody.run(mbody.SimConfig())     # FastPM + 2LPT defaults, Gaussian ICs
+result = mbody.run(mbody.SimConfig())     # BullFrog + 2LPT defaults, Gaussian ICs
 k, Pk, n_modes = result.power()           # measured P(k) of the final field
 result.dashboard(out="outputs/run.png")   # multi-panel diagnostic figure
 ```

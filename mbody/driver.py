@@ -8,10 +8,10 @@ state, the initial and final density fields, and an optional trajectory recorder
 and knows how to render the standard dashboard and serialize itself.
 
 Honest config. SimConfig defaults name only implemented, validated physics:
-integrator "fastpm" (growth-corrected KDK) and lpt_order 2 (2LPT), so
-``run(SimConfig())`` runs that baseline out of the box. The simpler "exact"
-(exact-background leapfrog) and lpt_order 1 (Zel'dovich), and the 2LPT-accurate
-"bullfrog" drift-kick-drift, are all implemented and selectable.
+integrator "bullfrog" (2LPT-accurate, time-reversible drift-kick-drift) and
+lpt_order 2 (2LPT), so ``run(SimConfig())`` runs that baseline out of the box.
+The growth-corrected KDK "fastpm", the simpler "exact" (exact-background
+leapfrog), and lpt_order 1 (Zel'dovich) are all implemented and selectable.
 ``_check_supported`` still guards any future reserved enum value, raising
 NotImplementedError rather than silently running something else.
 
@@ -153,7 +153,7 @@ def run(cfg, backend="camb", record=False, recorder=None, spacing="linear"):
     """Run the forward model specified by `cfg` (a SimConfig). Returns RunResult.
 
     Builds LPT initial conditions from cfg.ic (seed, f_NL, lpt_order), evolves
-    them with the integrator named by cfg.time.integrator (default "fastpm")
+    them with the integrator named by cfg.time.integrator (default "bullfrog")
     over cfg.time, and measures the initial and final CIC density. `backend`
     selects the linear-theory transfer ("camb" or "eh98"). `spacing` sets the
     scale-factor step layout passed to IG.a_grid: "linear" (equal steps in a)

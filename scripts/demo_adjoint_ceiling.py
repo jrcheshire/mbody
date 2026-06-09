@@ -2,7 +2,7 @@
 
 We have only ever EXTRAPOLATED the reversible-adjoint dlnP/df_NL ceiling from a
 B/cell fit (~596 B/cell -> N_max ~617 @128GB). This actually RUNS the headline
-gradient -- the default forward model (2LPT IC -> FastPM leapfrog -> CIC -> local
+gradient -- the default forward model (2LPT IC -> BullFrog DKD -> CIC -> local
 -bias tracer -> band power) differentiated w.r.t. f_NL through the reversible
 adjoint with recompute (the committed memory lever) -- at a large mesh N, and
 reports the true peak GPU memory and B/cell.
@@ -71,7 +71,7 @@ def main(N, n_steps=2):
     stop = threading.Event()
     hb = threading.Thread(target=_heartbeat, args=(N, t0, stop), daemon=True)
     hb.start()
-    # recompute_cic=True is the default (the committed memory lever); fastpm + 2LPT
+    # recompute_cic=True is the default (the committed memory lever); bullfrog + 2LPT
     # are the default forward model. This is the headline gradient, at scale.
     try:
         g = IG.adjoint_grad_fnl(

@@ -156,11 +156,12 @@ kick/drift factors computed in the fp64 CPU island (so they are constants of the
 step, off the AD graph):
 
 - **exact** -- exact-background leapfrog; a low-step-count growth deficit.
-- **fastpm** (default) -- Feng+16 growth-corrected kernels; a single linear mode
-  grows as `D(a)` exactly at any step count.
-- **bullfrog** -- Rampf+24 2LPT-accurate affine DKD; reuses the reversible
-  adjoint (the affine kick is exactly invertible). Its fewer-steps advantage is
-  resolution-gated, so fastpm stays the default.
+- **fastpm** -- Feng+16 growth-corrected kernels; a single linear mode grows as
+  `D(a)` exactly at any step count.
+- **bullfrog** (default) -- Rampf+24 2LPT-accurate affine DKD; reuses the reversible
+  adjoint (the affine kick is exactly invertible). Second-order accurate per step, so
+  fewer steps at the default resolution; its advantage is resolution-gated and holds
+  at `n_mesh >= 64`.
 
 ## Statistics, bias, RSD, and the Fisher
 
