@@ -19,6 +19,7 @@ import pytest
 
 from mbody import bias as B
 from mbody import catalog as CAT
+from mbody import cosmology as C
 from mbody import fields as F
 from mbody import painting as PA
 from mbody.config import (
@@ -58,7 +59,7 @@ def test_place_galaxies_mass_conservation():
     counts = rng.integers(0, 4, size=(N, N, N))
     xyz = CAT.place_galaxies(counts, box, rng)
     assert xyz.shape == (int(counts.sum()), 3)
-    assert xyz.dtype == np.float64
+    assert xyz.dtype == np.float32
     d = box.box_size / N
     idx = np.floor(xyz / d).astype(int)
     assert np.all(idx >= 0) and np.all(idx < N)  # in [0, L)
@@ -93,6 +94,162 @@ def test_sampling_reproducible():
     a, b, c = draw(42), draw(42), draw(43)
     assert np.array_equal(a, b)
     assert a.shape != c.shape or not np.array_equal(a, c)
+
+
+def test_place_galaxies_chunked_matches_full():
+    """Streaming placement reproduces the in-memory placement bit for bit.
+
+    The chunked generator skips empty cell-slabs without consuming the RNG and
+    draws sub-cell offsets in the same galaxy (cell) order, so concatenating the
+    chunks equals ``place_galaxies`` exactly -- the streamed catalog is identical.
+    """
+    box = SMALL_BOX
+    counts = np.random.default_rng(0).integers(0, 5, size=(box.n_mesh,) * 3)
+    full = CAT.place_galaxies(counts, box, np.random.default_rng(11))
+    # chunk_cells = n_mesh (a thin block) -> many chunks, some empty: exercises
+    # both the multi-chunk path and the empty-skip-without-drawing path.
+    chunks = list(
+        CAT.place_galaxies_chunked(
+            counts, box, np.random.default_rng(11), chunk_cells=box.n_mesh
+        )
+    )
+    streamed = np.concatenate(chunks, axis=0)
+    assert streamed.shape == full.shape
+    assert streamed.dtype == np.float32
+    assert np.array_equal(streamed, full)
+
+
+def test_sample_to_parquet_matches_in_memory(tmp_path):
+    """Streamed sample_to_parquet == sample_from_positions + write_parquet.
+
+    Same draw seed -> identical counts and (bit for bit) positions and provenance;
+    the on-disk schema matches the in-memory writer (x, y, z float64 + bin + same
+    metadata keys). Bounded memory is the only difference.
+    """
+    box = BoxConfig(box_size=256.0, n_mesh=16, n_particles=16)
+    cfg = SimConfig(
+        box=box,
+        time=TimeStepping(z_init=9.0, z_final=0.0, n_steps=2),
+        ic=InitialConditions(f_NL=0.0, kind="gaussian", seed=3),
+        tracer=Tracer(b1=1.5, b2=0.0, A=1.0),
+        catalog=CatalogSampling(
+            enabled=True, nbar=5e-3, draw_seed=7, bin_index=2, origin=(0.0, 0.0, 1.0e5)
+        ),
+    )
+    res = run(cfg, backend="eh98")
+    in_mem = CAT.sample_from_positions(
+        res.x, box, cfg.tracer, cfg.catalog, z=0.3, f_NL=0.0, ic_seed=3
+    )
+    p = tmp_path / "realization_00001" / "catalog.parq"
+    stats = CAT.sample_to_parquet(
+        res.x,
+        box,
+        cfg.tracer,
+        cfg.catalog,
+        str(p),
+        chunk_cells=box.n_mesh**2,
+        overwrite=True,
+        z=0.3,
+        f_NL=0.0,
+        ic_seed=3,
+    )
+    assert stats["n_galaxies"] == in_mem.n_galaxies
+    assert np.isclose(stats["realized_nbar"], in_mem.realized_nbar)
+    assert np.isclose(stats["clip_fraction"], in_mem.clip_fraction)
+
+    t = pq.read_table(str(p))
+    assert t.column_names == ["x", "y", "z", "bin"]
+    assert str(t.schema.field("x").type) == "double"
+    xyz = np.stack([t.column(c).to_numpy() for c in ("x", "y", "z")], axis=1)
+    assert np.array_equal(xyz, in_mem.xyz.astype(np.float64))
+    md = {k.decode(): v.decode() for k, v in t.schema.metadata.items()}
+    assert md["generator"] == "mbody"
+    assert int(md["bin_index"]) == 2
+    assert float(md["box_size_x"]) == box.box_size
+
+    # overwrite=False on an existing file is a no-op.
+    skipped = CAT.sample_to_parquet(res.x, box, cfg.tracer, cfg.catalog, str(p))
+    assert skipped.get("skipped") is True
+
+
+def _shell_mask(box, observer, r_min, r_max):
+    """The (N, N, N) boolean cell-center mask for r in [r_min, r_max]."""
+    N = box.n_mesh
+    c = (np.arange(N) + 0.5) * (box.box_size / N)
+    o = observer
+    r = np.sqrt(
+        (c - o[0])[:, None, None] ** 2
+        + (c - o[1])[None, :, None] ** 2
+        + (c - o[2])[None, None, :] ** 2
+    )
+    return (r >= r_min) & (r <= r_max)
+
+
+def test_radial_nbar_field_shell():
+    """radial_nbar_field carves a [r_min, r_max] shell at the profile density."""
+    box = BoxConfig(box_size=100.0, n_mesh=20, n_particles=20)
+    obs = (50.0, 50.0, 50.0)  # observer at the box center
+    nf = CAT.radial_nbar_field(box, obs, 2.0e-3, r_min=10.0, r_max=40.0)
+    assert nf.shape == (20, 20, 20)
+    shell = _shell_mask(box, obs, 10.0, 40.0)
+    assert shell.any() and (~shell).any()  # the cut is non-trivial
+    assert np.all(nf[shell] == 2.0e-3)
+    assert np.all(nf[~shell] == 0.0)
+    # a callable profile is evaluated per cell, with the r_max cut applied.
+    nf2 = CAT.radial_nbar_field(box, obs, lambda r: 1.0 / r, r_max=40.0)
+    outside = ~_shell_mask(box, obs, 0.0, 40.0)
+    assert np.all(nf2[outside] == 0.0)
+    assert nf2.max() > 0.0  # 1/r grows toward the observer; nonzero inside r_max
+
+
+def test_radial_selection_recovers_profile():
+    """A catalog drawn with a radial nbar_field sits in the shell and recovers
+    the realized radial number density to the Poisson floor (sampler fidelity).
+
+    The observer is placed at the box center via origin = -observer, so the saved
+    positions' r = |xyz| is the physical distance. Comparing the galaxy radial
+    histogram to the realized intensity field's (the clip-independent target)
+    isolates the sampler from the bias/selection model.
+    """
+    box = BoxConfig(box_size=400.0, n_mesh=64, n_particles=64)
+    cfg = SimConfig(
+        box=box,
+        time=TimeStepping(z_init=9.0, z_final=0.0, n_steps=3),
+        ic=InitialConditions(f_NL=0.0, kind="gaussian", seed=5),
+        tracer=Tracer(b1=1.5, b2=0.0, A=1.0),
+        catalog=CatalogSampling(enabled=True, nbar=1.0e-2, draw_seed=1),
+    )
+    res = run(cfg, backend="eh98")
+    obs = np.array([200.0, 200.0, 200.0])
+    rmin, rmax = 60.0, 180.0
+    nf = CAT.radial_nbar_field(box, obs, lambda r: 1.0e-2 * (100.0 / r), rmin, rmax)
+    sampling = dataclasses.replace(cfg.catalog, origin=tuple(-obs))
+    cat = CAT.sample_from_positions(res.x, box, cfg.tracer, sampling, nbar_field=nf)
+
+    r = np.sqrt((np.asarray(cat.xyz, np.float64) ** 2).sum(axis=1))
+    # every galaxy is inside the shell (sub-cell jitter allows a one-cell slop).
+    slop = box.box_size / box.n_mesh
+    assert r.min() >= rmin - slop and r.max() <= rmax + slop
+    # the sampled radial number density tracks the realized intensity field's.
+    lam = CAT.intensity_field(
+        np.asarray(B.local_bias_tracer(PA.density_contrast(res.x, box), 1.5, 0.0)),
+        nf,
+        box,
+    )
+    N = box.n_mesh
+    c = (np.arange(N) + 0.5) * (box.box_size / N)
+    rcell = np.sqrt(
+        (c - obs[0])[:, None, None] ** 2
+        + (c - obs[1])[None, :, None] ** 2
+        + (c - obs[2])[None, None, :] ** 2
+    )
+    edges = np.linspace(rmin, rmax, 5)
+    expected, _ = np.histogram(rcell.ravel(), edges, weights=lam.ravel())
+    measured, _ = np.histogram(r, edges)
+    ratio = measured / expected
+    # measured ~1-3.4%: Poisson floor plus a sub-cell-jitter edge effect at the
+    # innermost bin (galaxy r vs cell-center r leak across r_min).
+    assert np.all(np.abs(ratio - 1.0) < 0.05)
 
 
 def test_sample_from_positions_recovers_nbar():
@@ -346,3 +503,64 @@ def test_fnl_injection_survives_clip_and_poisson():
     assert abs(matter[0] / clip[0]) < 0.15  # measured ~0.04
     # (4) the Poisson catalog recovers the field signal (shot-free cross spectrum).
     assert abs(recov[0] - 1.0) < 0.15  # measured ~0.04
+
+
+def test_sample_from_field_pipeline():
+    """sample_from_field draws from a precomputed delta_g: intensity -> Poisson -> place.
+
+    Reproduces the documented pipeline independently from the same delta_g and draw
+    seed -- the refactor that split _counts_from_delta out of _counts_from_positions
+    is behavior-preserving.
+    """
+    box = BoxConfig(box_size=256.0, n_mesh=16, n_particles=16)
+    rng_pos = np.random.default_rng(3)
+    pos = mx.array(
+        rng_pos.uniform(0.0, box.box_size, size=(4096, 3)).astype(np.float32)
+    )
+    delta_g = np.asarray(
+        B.local_bias_tracer(PA.density_contrast(pos, box), 1.5, 0.5), np.float64
+    )
+    sampling = CatalogSampling(nbar=1e-2, draw_seed=7)
+
+    cat = CAT.sample_from_field(delta_g, box, sampling)
+
+    lam = CAT.intensity_field(delta_g, sampling.nbar, box)
+    rng = np.random.default_rng(sampling.draw_seed)
+    counts = CAT.poisson_counts(lam, rng)
+    xyz_exp = CAT.place_galaxies(counts, box, rng, origin=sampling.origin)
+    assert cat.n_galaxies == int(counts.sum())
+    assert np.array_equal(np.asarray(cat.xyz), xyz_exp)
+
+
+def test_lightcone_catalog_smoke():
+    """lightcone_catalog stitches shells: galaxies fall in their comoving ranges and
+    the outer (larger-volume) shells hold more galaxies."""
+    cosmo = Cosmology()
+    box = BoxConfig(box_size=4000.0, n_mesh=32, n_particles=32)
+    z_edges = np.array([0.1, 0.3, 0.5, 0.7])
+    time = TimeStepping(z_init=9.0, z_final=0.1, n_steps=6, integrator="bullfrog")
+    sampling = CatalogSampling(nbar=1e-5, draw_seed=0)
+    observer = (2000.0, 2000.0, 2000.0)
+
+    cat = CAT.lightcone_catalog(
+        box,
+        cosmo,
+        time,
+        observer,
+        z_edges,
+        lambda z: 1.5 + z,
+        sampling.nbar,
+        sampling,
+        f_NL=0.0,
+        seed=0,
+        backend="eh98",
+    )
+
+    assert cat.n_galaxies > 0
+    r = np.sqrt((np.asarray(cat.xyz) ** 2).sum(1))  # observer-centered -> r = |xyz|
+    chi = C.comoving_distance(z_edges, cosmo)
+    assert r.max() < 0.5 * box.box_size  # inside the inscribed sphere
+    in_range = (r >= chi[0] - box.cell_size) & (r <= chi[-1] + box.cell_size)
+    assert np.mean(in_range) > 0.95
+    counts = [int(((r >= chi[s]) & (r < chi[s + 1])).sum()) for s in range(3)]
+    assert counts[0] < counts[-1]  # outer shells have more comoving volume
