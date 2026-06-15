@@ -322,6 +322,27 @@ def E(z, cosmo):
     return np.sqrt(cosmo.Omega_m / a**3 + cosmo.Omega_Lambda)
 
 
+# Hubble distance c / H0 in Mpc/h: c[km/s] / 100 (the h cancels in Mpc/h units).
+C_OVER_H0 = 299792.458 / 100.0
+
+
+def comoving_distance(z, cosmo):
+    """Radial comoving distance chi(z) in Mpc/h for flat LCDM (radiation neglected).
+
+    chi(z) = (c/H0) integral_0^z dz' / E(z'), with E = H/H0 (cosmology.E). In Mpc/h
+    units the h cancels, so c/H0 = c[km/s] / 100. Maps survey redshift shells to the
+    box radial coordinate for a lightcone mock (observer-centered). Accepts scalar or
+    array z; returns Mpc/h.
+    """
+    z_arr = np.asarray(z, dtype=np.float64)
+    out = np.empty(z_arr.size)
+    for i, zi in enumerate(z_arr.ravel()):
+        integral, _ = quad(lambda zp: 1.0 / float(E(zp, cosmo)), 0.0, float(zi))
+        out[i] = C_OVER_H0 * integral
+    out = out.reshape(z_arr.shape)
+    return float(out) if z_arr.ndim == 0 else out
+
+
 def _growth_integrand(a, Om, OL):
     e = math.sqrt(Om / a**3 + OL)
     return 1.0 / (a * e) ** 3
